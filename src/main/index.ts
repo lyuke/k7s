@@ -2,26 +2,29 @@ import { app, BrowserWindow, dialog, ipcMain, IpcMainInvokeEvent } from 'electro
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { 
-  addKubeconfigPath, 
+import os from 'node:os'
+import * as pty from 'node-pty'
+import {
+  addKubeconfigPath,
   getContextPrefs,
   getCronJobDetail,
   getDaemonSetDetail,
   getDeploymentDetail,
   updateContextGrouping,
   updateContextName,
+  getEntry,
   getJobDetail,
   getNodeDetail,
   getPodDetail,
   getReplicaSetDetail,
   getStatefulSetDetail,
-  listContexts, 
+  listContexts,
   listCronJobs,
   listDaemonSets,
   listDeployments,
   listJobs,
   listNamespaces,
-  listNodes, 
+  listNodes,
   listPods,
   listReplicaSets,
   listStatefulSets
@@ -189,4 +192,82 @@ ipcMain.handle('k7s:add-kubeconfig', async () => {
   }
   const filePath = result.filePaths[0]
   return addKubeconfigPath(filePath)
+})
+
+// Terminal state
+let terminalPty: pty.IStandalone | null = null
+let terminalDataCallbacks: ((data: string) => void)[] = []
+let terminalExitCallbacks: ((exitCode: number) => void)[] = []
+
+ipcMain.handle('terminal:create', async (_event, contextId: string) => {
+  if (terminalPty) {
+    terminalPty.kill()
+    terminalPty = null
+  }
+
+  const entry = getEntry(contextId)
+  entry.kubeConfig.setCurrentContext(entry.contextName)
+
+  // Export kubeconfig to temp file
+  const tempKubeconfig = path.join(os.tmpdir(), `k7s-${Date.now()}.yaml`)
+  const kubeconfigContent = entry.kubeConfig.exportConfig()
+  await fs.writeFile(tempKubeconfig, kubeconfigContent, 'utf-8')
+
+  const shell = process.platform === 'win32' ? 'powershell.exe' : (process.env.SHELL || 'zsh')
+  const cwd = os.homedir()
+
+  terminalPty = pty.spawn(shell, [], {
+    name: 'xterm-256color',
+    cols: 80,
+    rows: 24,
+    cwd,
+    env: {
+      ...process.env,
+      KUBECONFIG: tempKubeconfig
+    } as Record<string, string>
+  })
+
+  terminalPty.onData((data) => {
+    terminalDataCallbacks.forEach(cb => cb(data))
+  })
+
+  terminalPty.onExit(({ exitCode }) => {
+    terminalExitCallbacks.forEach(cb => cb(exitCode))
+    terminalDataCallbacks = []
+    terminalExitCallbacks = []
+    terminalPty = null
+    // Clean up temp file
+    fs.unlink(tempKubeconfig, () => {})
+  })
+
+  return { shell, cwd }
+})
+
+ipcMain.handle('terminal:write', async (_event, data: string) => {
+  if (terminalPty) {
+    terminalPty.write(data)
+  }
+})
+
+ipcMain.handle('terminal:resize', async (_event, cols: number, rows: number) => {
+  if (terminalPty) {
+    terminalPty.resize(cols, rows)
+  }
+})
+
+ipcMain.handle('terminal:destroy', async () => {
+  if (terminalPty) {
+    terminalPty.kill()
+    terminalPty = null
+  }
+  terminalDataCallbacks = []
+  terminalExitCallbacks = []
+})
+
+ipcMain.on('terminal:onData', (_event, callback: (data: string) => void) => {
+  terminalDataCallbacks.push(callback)
+})
+
+ipcMain.on('terminal:onExit', (_event, callback: (exitCode: number) => void) => {
+  terminalExitCallbacks.push(callback)
 })

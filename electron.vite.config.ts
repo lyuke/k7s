@@ -5,7 +5,7 @@ export default defineConfig({
   main: {
     build: {
       rollupOptions: {
-        external: ['bufferutil', 'utf-8-validate']
+        external: ['bufferutil', 'utf-8-validate', 'node-pty']
       }
     }
   },

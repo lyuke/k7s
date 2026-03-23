@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { 
-  AddContextsResult, 
-  ContextRecord, 
+import { Terminal } from '@xterm/xterm'
+import { FitAddon } from '@xterm/addon-fit'
+import '@xterm/xterm/css/xterm.css'
+import {
+  AddContextsResult,
+  ContextRecord,
   CronJobInfo,
   DaemonSetInfo,
   DeploymentInfo,
   JobInfo,
   NamespaceInfo,
-  NodeInfo, 
+  NodeInfo,
   PodInfo,
   ReplicaSetInfo,
   ResourceType,
@@ -555,6 +558,10 @@ const App = () => {
   const [dragging, setDragging] = useState<{ id: string; fromGroupId: string } | null>(null)
   const [isAddingGroup, setIsAddingGroup] = useState(false)
   const [newGroupName, setNewGroupName] = useState('')
+  const [showTerminal, setShowTerminal] = useState(false)
+  const terminalRef = useRef<Terminal | null>(null)
+  const terminalContainerRef = useRef<HTMLDivElement>(null)
+  const fitAddonRef = useRef<FitAddon | null>(null)
 
   const selectedContext = useMemo(
     () => contexts.find((context) => context.id === selectedId),
@@ -881,6 +888,82 @@ const App = () => {
       }
     }
   }, [selectedId, selectedNamespace, refreshInterval])
+
+  useEffect(() => {
+    if (!showTerminal) {
+      if (terminalRef.current) {
+        terminalRef.current.dispose()
+        terminalRef.current = null
+      }
+      window.k8sTerm.destroy()
+      return
+    }
+
+    if (!terminalContainerRef.current || terminalRef.current) return
+    if (!selectedId) return
+
+    const term = new Terminal({
+      fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+      fontSize: 13,
+      theme: {
+        background: '#1e1e1e',
+        foreground: '#d4d4d4',
+        cursor: '#ffffff',
+        selectionBackground: 'rgba(255, 255, 255, 0.3)'
+      },
+      rows: 12,
+      cols: 80,
+      cursorBlink: true,
+    })
+
+    const fitAddon = new FitAddon()
+    term.loadAddon(fitAddon)
+    fitAddonRef.current = fitAddon
+
+    term.open(terminalContainerRef.current)
+    fitAddon.fit()
+
+    terminalRef.current = term
+
+    window.k8sTerm.create(selectedId).then(({ shell, cwd }) => {
+      term.write(`Connected to cluster (${shell})\r\n`)
+      term.write(`${cwd}$ `)
+
+      term.onData((data) => {
+        window.k8sTerm.write(data)
+      })
+
+      window.k8sTerm.onData((data) => {
+        term.write(data)
+      })
+
+      window.k8sTerm.onExit((exitCode) => {
+        term.write(`\r\n[Process exited with code ${exitCode}]\r\n`)
+      })
+    })
+
+    const handleResize = () => {
+      if (fitAddonRef.current && terminalRef.current) {
+        fitAddonRef.current.fit()
+        const dims = fitAddonRef.current.proposeDimensions()
+        if (dims) {
+          window.k8sTerm.resize(dims.cols, dims.rows)
+        }
+      }
+    }
+
+    window.addEventListener('resize', handleResize)
+
+    return () => {
+      window.removeEventListener('resize', handleResize)
+      if (terminalRef.current) {
+        terminalRef.current.dispose()
+        terminalRef.current = null
+      }
+      window.k8sTerm.destroy()
+      fitAddonRef.current = null
+    }
+  }, [showTerminal, selectedId])
 
   const getStatusPillClass = () => {
     if (status === 'loading') return 'loading'
@@ -1412,6 +1495,13 @@ const App = () => {
             {status === 'error' && '连接失败'}
             {status === 'idle' && '等待中'}
           </div>
+          <button
+            className={`terminal-btn ${showTerminal ? 'active' : ''}`}
+            onClick={() => setShowTerminal(!showTerminal)}
+            title="终端"
+          >
+            Terminal
+          </button>
         </div>
 
         {error && <div className="error-banner">{error}</div>}
@@ -1854,6 +1944,16 @@ const App = () => {
           </div>
         )}
       />
+
+      {showTerminal && (
+        <div className="terminal-panel">
+          <div className="terminal-header">
+            <span>Terminal</span>
+            <button className="terminal-close" onClick={() => setShowTerminal(false)}>×</button>
+          </div>
+          <div className="terminal-container" ref={terminalContainerRef} />
+        </div>
+      )}
     </div>
   )
 }

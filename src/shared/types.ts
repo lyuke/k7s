@@ -197,3 +197,18 @@ export type ContextPrefs = {
   groups: ContextGroup[]
   ungrouped: string[]
 }
+
+export interface K8sTermApi {
+  create(contextId: string): Promise<{ shell: string; cwd: string }>
+  write(data: string): void
+  resize(cols: number, rows: number): void
+  destroy(): void
+  onData(callback: (data: string) => void): void
+  onExit(callback: (exitCode: number) => void): void
+}
+
+declare global {
+  interface Window {
+    k8sTerm: K8sTermApi
+  }
+}

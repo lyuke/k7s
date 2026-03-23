@@ -240,7 +240,7 @@ export const addKubeconfigPath = async (filePath: string): Promise<AddContextsRe
   return { contexts: newContexts, addedIds }
 }
 
-const getEntry = (contextId: string): ContextEntry => {
+export const getEntry = (contextId: string): ContextEntry => {
   if (!contextCache) {
     throw new Error('context cache not ready')
   }
