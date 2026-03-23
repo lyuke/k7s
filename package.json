@@ -1,0 +1,36 @@
+{
+  "name": "k7s",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "start": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "dist:mac": "npm run build && npx electron-builder --mac",
+    "dist:mac:arm64": "npm run build && npx electron-builder --mac --arm64",
+    "dist:mac:x64": "npm run build && npx electron-builder --mac --x64",
+    "install:mac": "bash scripts/macos-install.sh"
+  },
+  "bin": {
+    "k7s": "bin/k7s.js"
+  },
+  "dependencies": {
+    "@kubernetes/client-node": "^1.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.12",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "electron": "^31.0.2",
+    "electron-builder": "^26.8.1",
+    "electron-vite": "^2.3.0",
+    "typescript": "^5.5.4",
+    "vite": "^5.3.5"
+  }
+}
