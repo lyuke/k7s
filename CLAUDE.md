@@ -30,22 +30,39 @@ npm run dist:mac:x64    # Build for Intel Macs
 |------|---------|
 | `src/main/index.ts` | Electron main entry, window creation, IPC handler registration |
 | `src/main/kube.ts` | Kubernetes API wrapper using @kubernetes/client-node |
+| `src/main/webServer.ts` | HTTP/WebSocket server for web mode access |
 | `src/preload/index.ts` | contextBridge API exposure for renderer |
 | `src/shared/types.ts` | TypeScript types shared across processes |
-| `src/renderer/src/App.tsx` | Main React component (contains all UI logic) |
+| `src/renderer/src/App.tsx` | Main React component |
+| `src/renderer/src/api/provider.ts` | Unified API provider (Electron IPC + WebSocket) |
+| `src/renderer/src/store/` | Zustand stores for state management |
 | `electron.vite.config.ts` | electron-vite build configuration |
 
-### IPC Communication
+### API Communication
 
-Renderer communicates with main process via `window.k7s` API exposed through contextBridge. All Kubernetes operations are handled in the main process:
+The renderer uses a unified API provider (`src/renderer/src/api/provider.ts`) that automatically detects the environment:
+
+- **Electron Mode**: Uses IPC via `window.k7s` exposed through contextBridge
+- **Web Mode**: Uses WebSocket connection to `/ws` endpoint
 
 ```typescript
-window.k7s.listContexts()           // List kubeconfig contexts
-window.k7s.listPods(contextId)      // List pods
-window.k7s.listDeployments(contextId)
-window.k7s.addKubeconfigFile()       // Open file dialog to add kubeconfig
+import { k8sApi } from './api/provider'
+// Works in both Electron and Web modes
+k8sApi.listContexts()
+k8sApi.listPods(contextId)
 // ... etc
 ```
+
+### Web Mode (Remote Access)
+
+When running with `K7S_ENABLE_WEB=true`, the app starts an embedded HTTP server on port 3000 (configurable via `K7S_WEB_PORT`). This allows accessing the Kubernetes dashboard from a web browser:
+
+```bash
+K7S_ENABLE_WEB=true npm run dev  # Start with web server
+# Access at http://localhost:3000
+```
+
+Note: Terminal functionality is only available in Electron mode (requires node-pty).
 
 ### Kubernetes Integration
 

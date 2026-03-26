@@ -41,6 +41,7 @@ declare global {
       getContextPrefs: () => Promise<ContextPrefs>
       updateContextName: (contextId: string, name: string) => Promise<ContextPrefs>
       updateContextGrouping: (groups: ContextGroup[], ungrouped: string[]) => Promise<ContextPrefs>
+      getPodLogs: (contextId: string, namespace: string, podName: string, containerName?: string, tailLines?: number) => Promise<string>
     }
   }
 }

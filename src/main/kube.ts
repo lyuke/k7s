@@ -1,34 +1,57 @@
-import { 
-  AppsV1Api, 
+import {
+  AppsV1Api,
   BatchV1Api,
-  CoreV1Api, 
-  KubeConfig, 
+  CoreV1Api,
+  CustomObjectsApi,
+  KubeConfig,
+  NetworkingV1Api,
+  V1APIVersions,
   V1CronJob,
+  V1DeleteOptions,
   V1DaemonSet,
   V1Deployment,
   V1Job,
-  V1Node, 
+  V1Namespace,
+  V1Node,
   V1Pod,
   V1ReplicaSet,
-  V1StatefulSet
+  V1Secret,
+  V1Service,
+  V1ConfigMap,
+  V1StatefulSet,
+  V1Ingress
 } from '@kubernetes/client-node'
 import { app } from 'electron'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { 
-  AddContextsResult, 
-  ContextRecord, 
+import {
+  AddContextsResult,
+  ClusterHealth,
+  ConfigMapFormData,
+  ConfigMapInfo,
+  ContextRecord,
   CronJobInfo,
+  CreateResult,
   DaemonSetInfo,
+  DeploymentFormData,
   DeploymentInfo,
+  DeleteResult,
+  IngressFormData,
+  IngressInfo,
   JobInfo,
   NamespaceInfo,
   NodeCapacity,
-  NodeInfo, 
+  NodeInfo,
   PodContainer,
   PodInfo,
   ReplicaSetInfo,
+  ScaleResult,
+  SecretFormData,
+  SecretInfo,
+  ServiceFormData,
+  ServiceInfo,
   StatefulSetInfo,
+  UpdateResult,
   ContextPrefs,
   ContextGroup
 } from '../shared/types'
@@ -78,6 +101,9 @@ let contextCache: {
   paths: string[]
 } | null = null
 
+// Mutex for cache rebuild to prevent race conditions
+let cacheBuildPromise: Promise<void> | null = null
+
 const loadFromFile = (filePath: string): KubeConfig => {
   const kubeConfig = new KubeConfig()
   try {
@@ -98,7 +124,7 @@ const loadDefault = (): KubeConfig => {
   }
 }
 
-const ensureCache = async () => {
+const rebuildCache = async () => {
   const store = await readStore()
   const paths = store.paths.filter(Boolean)
   if (contextCache && contextCache.paths.join('|') === paths.join('|')) {
@@ -107,12 +133,12 @@ const ensureCache = async () => {
   const records: ContextRecord[] = []
   const entries = new Map<string, ContextEntry>()
   const sources: Array<{ source: string; kubeConfig: KubeConfig }> = []
-  
+
   const defaultConfig = loadDefault()
   if (defaultConfig.getContexts().length > 0) {
     sources.push({ source: 'default', kubeConfig: defaultConfig })
   }
-  
+
   for (const filePath of paths) {
     try {
       const config = loadFromFile(filePath)
@@ -122,7 +148,7 @@ const ensureCache = async () => {
       continue
     }
   }
-  
+
   for (const { source, kubeConfig } of sources) {
     for (const ctx of kubeConfig.getContexts()) {
       const id = buildId(source, ctx.name)
@@ -137,6 +163,28 @@ const ensureCache = async () => {
     }
   }
   contextCache = { records, entries, paths }
+}
+
+const ensureCache = async () => {
+  // If already building, wait for that to complete
+  if (cacheBuildPromise) {
+    await cacheBuildPromise
+    return
+  }
+
+  const store = await readStore()
+  const paths = store.paths.filter(Boolean)
+  if (contextCache && contextCache.paths.join('|') === paths.join('|')) {
+    return
+  }
+
+  // Start new build and store promise
+  cacheBuildPromise = rebuildCache()
+  try {
+    await cacheBuildPromise
+  } finally {
+    cacheBuildPromise = null
+  }
 }
 
 export const listContexts = async (): Promise<ContextRecord[]> => {
@@ -286,6 +334,16 @@ const createAppsV1Api = (entry: ContextEntry): AppsV1Api => {
 const createBatchV1Api = (entry: ContextEntry): BatchV1Api => {
   setupKubeConfig(entry)
   return entry.kubeConfig.makeApiClient(BatchV1Api)
+}
+
+const createNetworkingV1Api = (entry: ContextEntry): NetworkingV1Api => {
+  setupKubeConfig(entry)
+  return entry.kubeConfig.makeApiClient(NetworkingV1Api)
+}
+
+const createCustomObjectsApi = (entry: ContextEntry): CustomObjectsApi => {
+  setupKubeConfig(entry)
+  return entry.kubeConfig.makeApiClient(CustomObjectsApi)
 }
 
 const roleFromLabels = (labels: Record<string, string>): string => {
@@ -833,7 +891,7 @@ export const getCronJobDetail = async (contextId: string, namespace: string, nam
     const res = await api.readNamespacedCronJob({ name, namespace })
     const cj = extractResponse<V1CronJob>(res)
     if (!cj) throw new Error('CronJob不存在')
-    
+
     return {
       name: cj.metadata?.name ?? '',
       namespace: cj.metadata?.namespace ?? '',
@@ -851,5 +909,729 @@ export const getCronJobDetail = async (contextId: string, namespace: string, nam
     }
   } catch (err) {
     throw new Error(`获取CronJob详情失败: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+// Delete operations
+export const deletePod = async (contextId: string, namespace: string, name: string): Promise<DeleteResult> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+  const api = createCoreV1Api(entry)
+  try {
+    await api.deleteNamespacedPod({ name, namespace })
+    return { success: true }
+  } catch (err) {
+    return { success: false, message: `删除Pod失败: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}
+
+export const deleteDeployment = async (contextId: string, namespace: string, name: string): Promise<DeleteResult> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+  const api = createAppsV1Api(entry)
+  try {
+    await api.deleteNamespacedDeployment({ name, namespace })
+    return { success: true }
+  } catch (err) {
+    return { success: false, message: `删除Deployment失败: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}
+
+export const deleteDaemonSet = async (contextId: string, namespace: string, name: string): Promise<DeleteResult> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+  const api = createAppsV1Api(entry)
+  try {
+    await api.deleteNamespacedDaemonSet({ name, namespace })
+    return { success: true }
+  } catch (err) {
+    return { success: false, message: `删除DaemonSet失败: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}
+
+export const deleteStatefulSet = async (contextId: string, namespace: string, name: string): Promise<DeleteResult> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+  const api = createAppsV1Api(entry)
+  try {
+    await api.deleteNamespacedStatefulSet({ name, namespace })
+    return { success: true }
+  } catch (err) {
+    return { success: false, message: `删除StatefulSet失败: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}
+
+export const deleteReplicaSet = async (contextId: string, namespace: string, name: string): Promise<DeleteResult> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+  const api = createAppsV1Api(entry)
+  try {
+    await api.deleteNamespacedReplicaSet({ name, namespace })
+    return { success: true }
+  } catch (err) {
+    return { success: false, message: `删除ReplicaSet失败: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}
+
+export const deleteJob = async (contextId: string, namespace: string, name: string): Promise<DeleteResult> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+  const api = createBatchV1Api(entry)
+  try {
+    await api.deleteNamespacedJob({ name, namespace })
+    return { success: true }
+  } catch (err) {
+    return { success: false, message: `删除Job失败: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}
+
+export const deleteCronJob = async (contextId: string, namespace: string, name: string): Promise<DeleteResult> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+  const api = createBatchV1Api(entry)
+  try {
+    await api.deleteNamespacedCronJob({ name, namespace })
+    return { success: true }
+  } catch (err) {
+    return { success: false, message: `删除CronJob失败: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}
+
+export const deleteNamespace = async (contextId: string, name: string): Promise<DeleteResult> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+  const api = createCoreV1Api(entry)
+  try {
+    await api.deleteNamespace({ name })
+    return { success: true }
+  } catch (err) {
+    return { success: false, message: `删除Namespace失败: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}
+
+// Scale operations
+export const scaleDeployment = async (contextId: string, namespace: string, name: string, replicas: number): Promise<ScaleResult> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+  const api = createAppsV1Api(entry)
+  try {
+    const res = await api.patchNamespacedDeploymentScale({ name, namespace, body: { spec: { replicas } } })
+    const scale = extractResponse<{ spec?: { replicas?: number } }>(res)
+    return { success: true, replicas: scale?.spec?.replicas ?? replicas }
+  } catch (err) {
+    return { success: false, replicas, message: `扩缩容Deployment失败: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}
+
+export const scaleStatefulSet = async (contextId: string, namespace: string, name: string, replicas: number): Promise<ScaleResult> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+  const api = createAppsV1Api(entry)
+  try {
+    const res = await api.patchNamespacedStatefulSetScale({ name, namespace, body: { spec: { replicas } } })
+    const scale = extractResponse<{ spec?: { replicas?: number } }>(res)
+    return { success: true, replicas: scale?.spec?.replicas ?? replicas }
+  } catch (err) {
+    return { success: false, replicas, message: `扩缩容StatefulSet失败: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}
+
+export const scaleReplicaSet = async (contextId: string, namespace: string, name: string, replicas: number): Promise<ScaleResult> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+  const api = createAppsV1Api(entry)
+  try {
+    const res = await api.patchNamespacedReplicaSetScale({ name, namespace, body: { spec: { replicas } } })
+    const scale = extractResponse<{ spec?: { replicas?: number } }>(res)
+    return { success: true, replicas: scale?.spec?.replicas ?? replicas }
+  } catch (err) {
+    return { success: false, replicas, message: `扩缩容ReplicaSet失败: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}
+
+export const getPodLogs = async (
+  contextId: string,
+  namespace: string,
+  podName: string,
+  containerName?: string,
+  tailLines: number = 100
+): Promise<string> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+  const api = createCoreV1Api(entry)
+  try {
+    const res = await api.readNamespacedPodLog({
+      name: podName,
+      namespace,
+      container: containerName,
+      tailLines: tailLines
+    })
+    const log = extractResponse<string>(res)
+    return log ?? ''
+  } catch (err) {
+    throw new Error(`获取日志失败: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+// Cluster Health
+export const getClusterHealth = async (contextId: string): Promise<ClusterHealth> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+
+  try {
+    const [nodes, pods] = await Promise.all([
+      listNodes(contextId),
+      listPods(contextId)
+    ])
+
+    const totalNodes = nodes.length
+    const readyNodes = nodes.filter(n => n.status === 'Ready').length
+
+    const totalPods = pods.length
+    const runningPods = pods.filter(p => p.status === 'Running').length
+    const pendingPods = pods.filter(p => p.status === 'Pending').length
+    const failedPods = pods.filter(p => p.status === 'Failed' || p.status === 'Unknown').length
+
+    let status: ClusterHealth['status'] = 'unknown'
+    if (totalNodes === 0 && totalPods === 0) {
+      status = 'unknown'
+    } else if (failedPods > 0 || (totalNodes > 0 && readyNodes === 0)) {
+      status = 'unhealthy'
+    } else if (pendingPods > totalPods * 0.1 || readyNodes < totalNodes * 0.9) {
+      status = 'degraded'
+    } else {
+      status = 'healthy'
+    }
+
+    return {
+      status,
+      totalNodes,
+      readyNodes,
+      totalPods,
+      runningPods,
+      pendingPods,
+      failedPods,
+      lastUpdated: new Date().toISOString()
+    }
+  } catch {
+    return {
+      status: 'unknown',
+      totalNodes: 0,
+      readyNodes: 0,
+      totalPods: 0,
+      runningPods: 0,
+      pendingPods: 0,
+      failedPods: 0,
+      lastUpdated: new Date().toISOString()
+    }
+  }
+}
+
+// List operations for new resource types
+export const listServices = async (contextId: string, namespace?: string): Promise<ServiceInfo[]> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+  const api = createCoreV1Api(entry)
+  try {
+    let res: unknown
+    if (namespace && namespace !== 'all') {
+      res = await api.listNamespacedService({ namespace })
+    } else {
+      res = await api.listServiceForAllNamespaces()
+    }
+    const typedRes = res as { body?: { items?: V1Service[] }; items?: V1Service[] }
+    const items = typedRes.body?.items ?? typedRes.items ?? []
+    return items.map((svc) => {
+      const ports = svc.spec?.ports?.map(p => `${p.port}:${p.targetPort}/${p.protocol ?? 'TCP'}`).join(', ') ?? ''
+      const hosts = svc.spec?.externalIPs?.join(', ') ?? ''
+      return {
+        name: svc.metadata?.name ?? '',
+        namespace: svc.metadata?.namespace ?? '',
+        type: svc.spec?.type ?? 'ClusterIP',
+        clusterIP: svc.spec?.clusterIP ?? '',
+        externalIP: hosts || undefined,
+        ports,
+        age: formatAge(svc.metadata?.creationTimestamp),
+        labels: svc.metadata?.labels,
+        selector: svc.spec?.selector
+      }
+    })
+  } catch (err) {
+    throw new Error(`获取Service失败: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+export const listConfigMaps = async (contextId: string, namespace?: string): Promise<ConfigMapInfo[]> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+  const api = createCoreV1Api(entry)
+  try {
+    let res: unknown
+    if (namespace && namespace !== 'all') {
+      res = await api.listNamespacedConfigMap({ namespace })
+    } else {
+      res = await api.listConfigMapForAllNamespaces()
+    }
+    const typedRes = res as { body?: { items?: V1ConfigMap[] }; items?: V1ConfigMap[] }
+    const items = typedRes.body?.items ?? typedRes.items ?? []
+    return items.map((cm) => ({
+      name: cm.metadata?.name ?? '',
+      namespace: cm.metadata?.namespace ?? '',
+      age: formatAge(cm.metadata?.creationTimestamp),
+      labels: cm.metadata?.labels,
+      data: cm.data
+    }))
+  } catch (err) {
+    throw new Error(`获取ConfigMap失败: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+export const listSecrets = async (contextId: string, namespace?: string): Promise<SecretInfo[]> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+  const api = createCoreV1Api(entry)
+  try {
+    let res: unknown
+    if (namespace && namespace !== 'all') {
+      res = await api.listNamespacedSecret({ namespace })
+    } else {
+      res = await api.listSecretForAllNamespaces()
+    }
+    const typedRes = res as { body?: { items?: V1Secret[] }; items?: V1Secret[] }
+    const items = typedRes.body?.items ?? typedRes.items ?? []
+    return items.map((secret) => ({
+      name: secret.metadata?.name ?? '',
+      namespace: secret.metadata?.namespace ?? '',
+      type: secret.type ?? 'Opaque',
+      age: formatAge(secret.metadata?.creationTimestamp),
+      labels: secret.metadata?.labels,
+      data: secret.data
+    }))
+  } catch (err) {
+    throw new Error(`获取Secret失败: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+export const listIngresses = async (contextId: string, namespace?: string): Promise<IngressInfo[]> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+  const api = createNetworkingV1Api(entry)
+  try {
+    let res: unknown
+    if (namespace && namespace !== 'all') {
+      res = await api.listNamespacedIngress({ namespace })
+    } else {
+      res = await api.listIngressForAllNamespaces()
+    }
+    const typedRes = res as { body?: { items?: V1Ingress[] }; items?: V1Ingress[] }
+    const items = typedRes.body?.items ?? typedRes.items ?? []
+    return items.map((ing) => {
+      const hosts = ing.spec?.rules?.map(r => r.host).join(', ') ?? '*'
+      const address = ing.status?.loadBalancer?.ingress?.map(i => i.ip || i.hostname).join(', ') ?? ''
+      return {
+        name: ing.metadata?.name ?? '',
+        namespace: ing.metadata?.namespace ?? '',
+        ingressClass: ing.spec?.ingressClassName,
+        hosts,
+        address,
+        ports: '80, 443',
+        age: formatAge(ing.metadata?.creationTimestamp),
+        labels: ing.metadata?.labels
+      }
+    })
+  } catch (err) {
+    throw new Error(`获取Ingress失败: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+// Create operations
+export const createNamespace = async (contextId: string, name: string): Promise<CreateResult> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+  const api = createCoreV1Api(entry)
+  try {
+    const namespace: V1Namespace = {
+      apiVersion: 'v1',
+      kind: 'Namespace',
+      metadata: { name }
+    }
+    await api.createNamespace({ body: namespace })
+    return { success: true, name, message: `Namespace ${name} created successfully` }
+  } catch (err) {
+    return { success: false, message: `创建Namespace失败: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}
+
+export const createDeployment = async (contextId: string, data: DeploymentFormData): Promise<CreateResult> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+  const api = createAppsV1Api(entry)
+
+  const labels: Record<string, string> = {}
+  data.labels.forEach(l => {
+    if (l.key) labels[l.key] = l.value
+  })
+
+  const env: Array<{ name: string; value: string }> = []
+  data.env.forEach(e => {
+    if (e.key) env.push({ name: e.key, value: e.value })
+  })
+
+  const deployment: V1Deployment = {
+    apiVersion: 'apps/v1',
+    kind: 'Deployment',
+    metadata: {
+      name: data.name,
+      namespace: data.namespace,
+      labels
+    },
+    spec: {
+      replicas: data.replicas,
+      selector: {
+        matchLabels: labels
+      },
+      template: {
+        metadata: {
+          labels
+        },
+        spec: {
+          containers: [{
+            name: data.name,
+            image: data.image,
+            ports: [{
+              containerPort: data.targetPort,
+              protocol: data.protocol as 'TCP' | 'UDP'
+            }],
+            env
+          }]
+        }
+      }
+    }
+  }
+
+  try {
+    await api.createNamespacedDeployment({ namespace: data.namespace, body: deployment })
+    return { success: true, name: data.name, namespace: data.namespace }
+  } catch (err) {
+    return { success: false, message: `创建Deployment失败: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}
+
+export const createService = async (contextId: string, data: ServiceFormData): Promise<CreateResult> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+  const api = createCoreV1Api(entry)
+
+  const selector: Record<string, string> = {}
+  data.selector.forEach(s => {
+    if (s.key) selector[s.key] = s.value
+  })
+
+  const service: V1Service = {
+    apiVersion: 'v1',
+    kind: 'Service',
+    metadata: {
+      name: data.name,
+      namespace: data.namespace
+    },
+    spec: {
+      type: data.type,
+      selector,
+      ports: [{
+        port: data.port,
+        targetPort: data.targetPort,
+        protocol: data.protocol as 'TCP' | 'UDP'
+      }]
+    }
+  }
+
+  try {
+    await api.createNamespacedService({ namespace: data.namespace, body: service })
+    return { success: true, name: data.name, namespace: data.namespace }
+  } catch (err) {
+    return { success: false, message: `创建Service失败: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}
+
+export const createConfigMap = async (contextId: string, data: ConfigMapFormData): Promise<CreateResult> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+  const api = createCoreV1Api(entry)
+
+  const cmData: Record<string, string> = {}
+  data.data.forEach(d => {
+    if (d.key) cmData[d.key] = d.value
+  })
+
+  const configMap: V1ConfigMap = {
+    apiVersion: 'v1',
+    kind: 'ConfigMap',
+    metadata: {
+      name: data.name,
+      namespace: data.namespace
+    },
+    data: cmData
+  }
+
+  try {
+    await api.createNamespacedConfigMap({ namespace: data.namespace, body: configMap })
+    return { success: true, name: data.name, namespace: data.namespace }
+  } catch (err) {
+    return { success: false, message: `创建ConfigMap失败: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}
+
+export const createSecret = async (contextId: string, data: SecretFormData): Promise<CreateResult> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+  const api = createCoreV1Api(entry)
+
+  const secretData: Record<string, string> = {}
+  data.data.forEach(d => {
+    if (d.key) secretData[d.key] = d.value
+  })
+
+  const secret: V1Secret = {
+    apiVersion: 'v1',
+    kind: 'Secret',
+    metadata: {
+      name: data.name,
+      namespace: data.namespace
+    },
+    type: data.type,
+    data: secretData
+  }
+
+  try {
+    await api.createNamespacedSecret({ namespace: data.namespace, body: secret })
+    return { success: true, name: data.name, namespace: data.namespace }
+  } catch (err) {
+    return { success: false, message: `创建Secret失败: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}
+
+export const createIngress = async (contextId: string, data: IngressFormData): Promise<CreateResult> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+  const api = createNetworkingV1Api(entry)
+
+  const ingress: V1Ingress = {
+    apiVersion: 'networking.k8s.io/v1',
+    kind: 'Ingress',
+    metadata: {
+      name: data.name,
+      namespace: data.namespace,
+      annotations: data.ingressClass ? { 'kubernetes.io/ingress.class': data.ingressClass } : undefined
+    },
+    spec: {
+      ingressClassName: data.ingressClass,
+      rules: [{
+        host: data.host,
+        http: {
+          paths: [{
+            path: '/',
+            pathType: 'Prefix',
+            backend: {
+              service: {
+                name: data.serviceName,
+                port: { number: data.servicePort }
+              }
+            }
+          }]
+        }
+      }],
+      tls: data.tls ? [{ hosts: [data.host], secretName: data.tlsSecret }] : undefined
+    }
+  }
+
+  try {
+    await api.createNamespacedIngress({ namespace: data.namespace, body: ingress })
+    return { success: true, name: data.name, namespace: data.namespace }
+  } catch (err) {
+    return { success: false, message: `创建Ingress失败: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}
+
+// Update operations
+export const updateDeployment = async (
+  contextId: string,
+  namespace: string,
+  name: string,
+  data: Partial<DeploymentFormData>
+): Promise<UpdateResult> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+  const api = createAppsV1Api(entry)
+
+  try {
+    const existing = await api.readNamespacedDeployment({ name, namespace })
+    const deploy = extractResponse<V1Deployment>(existing)
+    if (!deploy) {
+      return { success: false, message: 'Deployment不存在' }
+    }
+
+    const patchBody: Record<string, unknown> = {}
+
+    if (data.replicas !== undefined) {
+      patchBody.spec = { ...deploy.spec, replicas: data.replicas }
+    }
+
+    if (data.image !== undefined) {
+      const containers = deploy.spec?.template?.spec?.containers ?? []
+      if (containers.length > 0) {
+        containers[0].image = data.image
+        patchBody.spec = {
+          ...deploy.spec,
+          template: {
+            ...deploy.spec?.template,
+            spec: {
+              ...deploy.spec?.template?.spec,
+              containers
+            }
+          }
+        }
+      }
+    }
+
+    await api.patchNamespacedDeployment({ name, namespace, body: patchBody })
+    return { success: true }
+  } catch (err) {
+    return { success: false, message: `更新Deployment失败: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}
+
+// YAML apply
+export const applyYaml = async (contextId: string, yaml: string): Promise<CreateResult> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+  const customApi = createCustomObjectsApi(entry)
+
+  try {
+    const docs = yaml.split('---').filter(d => d.trim())
+
+    for (const doc of docs) {
+      if (!doc.trim()) continue
+
+      const parsed = JSON.parse(doc)
+      const kind = parsed.kind
+      const apiVersion = parsed.apiVersion
+      const metadata = parsed.metadata || {}
+
+      if (!kind || !apiVersion || !metadata.name) {
+        continue
+      }
+
+      const namespace = metadata.namespace || 'default'
+
+      if (kind === 'Namespace') {
+        const api = createCoreV1Api(entry)
+        await api.createNamespace({ body: parsed })
+      } else if (kind === 'Deployment') {
+        const api = createAppsV1Api(entry)
+        try {
+          await api.patchNamespacedDeployment({ name: metadata.name, namespace, body: parsed })
+        } catch {
+          await api.createNamespacedDeployment({ namespace, body: parsed })
+        }
+      } else if (kind === 'Service') {
+        const api = createCoreV1Api(entry)
+        try {
+          await api.patchNamespacedService({ name: metadata.name, namespace, body: parsed })
+        } catch {
+          await api.createNamespacedService({ namespace, body: parsed })
+        }
+      } else if (kind === 'ConfigMap') {
+        const api = createCoreV1Api(entry)
+        try {
+          await api.patchNamespacedConfigMap({ name: metadata.name, namespace, body: parsed })
+        } catch {
+          await api.createNamespacedConfigMap({ namespace, body: parsed })
+        }
+      } else if (kind === 'Secret') {
+        const api = createCoreV1Api(entry)
+        try {
+          await api.patchNamespacedSecret({ name: metadata.name, namespace, body: parsed })
+        } catch {
+          await api.createNamespacedSecret({ namespace, body: parsed })
+        }
+      } else if (kind === 'Ingress') {
+        const api = createNetworkingV1Api(entry)
+        try {
+          await api.patchNamespacedIngress({ name: metadata.name, namespace, body: parsed })
+        } catch {
+          await api.createNamespacedIngress({ namespace, body: parsed })
+        }
+      } else {
+        // For other types, use CustomObjectsApi
+        const group = apiVersion.split('/')[0]
+        const version = apiVersion.split('/')[1] || 'v1'
+        await customApi.patchNamespacedCustomObject(group, version, namespace, kind.toLowerCase() + 's', metadata.name, parsed)
+      }
+    }
+
+    return { success: true, message: `Applied ${docs.length} resource(s) successfully` }
+  } catch (err) {
+    return { success: false, message: `Apply失败: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}
+
+// Get resource YAML
+export const getResourceYaml = async (
+  contextId: string,
+  kind: string,
+  namespace: string,
+  name: string
+): Promise<string> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+
+  try {
+    if (kind === 'Deployment') {
+      const api = createAppsV1Api(entry)
+      const res = await api.readNamespacedDeployment({ name, namespace })
+      const deploy = extractResponse<V1Deployment>(res)
+      if (deploy) {
+        return JSON.stringify(deploy, null, 2)
+      }
+    } else if (kind === 'Service') {
+      const api = createCoreV1Api(entry)
+      const res = await api.readNamespacedService({ name, namespace })
+      const svc = extractResponse<V1Service>(res)
+      if (svc) {
+        return JSON.stringify(svc, null, 2)
+      }
+    } else if (kind === 'ConfigMap') {
+      const api = createCoreV1Api(entry)
+      const res = await api.readNamespacedConfigMap({ name, namespace })
+      const cm = extractResponse<V1ConfigMap>(res)
+      if (cm) {
+        return JSON.stringify(cm, null, 2)
+      }
+    } else if (kind === 'Secret') {
+      const api = createCoreV1Api(entry)
+      const res = await api.readNamespacedSecret({ name, namespace })
+      const secret = extractResponse<V1Secret>(res)
+      if (secret) {
+        return JSON.stringify(secret, null, 2)
+      }
+    } else if (kind === 'Ingress') {
+      const api = createNetworkingV1Api(entry)
+      const res = await api.readNamespacedIngress({ name, namespace })
+      const ing = extractResponse<V1Ingress>(res)
+      if (ing) {
+        return JSON.stringify(ing, null, 2)
+      }
+    } else if (kind === 'Namespace') {
+      const api = createCoreV1Api(entry)
+      const res = await api.readNamespace({ name })
+      const ns = extractResponse<V1Namespace>(res)
+      if (ns) {
+        return JSON.stringify(ns, null, 2)
+      }
+    }
+
+    throw new Error(`Resource ${kind}/${name} not found`)
+  } catch (err) {
+    throw new Error(`获取YAML失败: ${err instanceof Error ? err.message : String(err)}`)
   }
 }

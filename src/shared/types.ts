@@ -6,6 +6,31 @@ export type ContextRecord = {
   source: string
 }
 
+export type ClusterHealthStatus = 'healthy' | 'degraded' | 'unhealthy' | 'unknown'
+
+export type ClusterHealth = {
+  status: ClusterHealthStatus
+  totalNodes: number
+  readyNodes: number
+  totalPods: number
+  runningPods: number
+  pendingPods: number
+  failedPods: number
+  lastUpdated: string
+}
+
+export type CreateResult = {
+  success: boolean
+  name?: string
+  namespace?: string
+  message?: string
+}
+
+export type UpdateResult = {
+  success: boolean
+  message?: string
+}
+
 export type NodeCondition = {
   type: string
   status: string
@@ -171,12 +196,63 @@ export type CronJobInfo = {
   startingDeadlineSeconds?: number
 }
 
+export type DeleteResult = {
+  success: boolean
+  message?: string
+}
+
+export type ServiceInfo = {
+  name: string
+  namespace: string
+  type: string
+  clusterIP: string
+  externalIP?: string
+  ports: string
+  age: string
+  labels?: Record<string, string>
+  selector?: Record<string, string>
+}
+
+export type ConfigMapInfo = {
+  name: string
+  namespace: string
+  age: string
+  labels?: Record<string, string>
+  data?: Record<string, string>
+}
+
+export type SecretInfo = {
+  name: string
+  namespace: string
+  type: string
+  age: string
+  labels?: Record<string, string>
+  data?: Record<string, string>
+}
+
+export type IngressInfo = {
+  name: string
+  namespace: string
+  ingressClass?: string
+  hosts: string
+  address: string
+  ports: string
+  age: string
+  labels?: Record<string, string>
+}
+
+export type ScaleResult = {
+  success: boolean
+  replicas: number
+  message?: string
+}
+
 export type AddContextsResult = {
   contexts: ContextRecord[]
   addedIds: string[]
 }
 
-export type ResourceType = 
+export type ResourceType =
   | 'nodes'
   | 'pods'
   | 'deployments'
@@ -185,6 +261,10 @@ export type ResourceType =
   | 'replicasets'
   | 'jobs'
   | 'cronjobs'
+  | 'services'
+  | 'configmaps'
+  | 'secrets'
+  | 'ingresses'
 
 export type ContextGroup = {
   id: string
@@ -205,6 +285,64 @@ export interface K8sTermApi {
   destroy(): void
   onData(callback: (data: string) => void): void
   onExit(callback: (exitCode: number) => void): void
+}
+
+// Form data types for CRUD operations
+export type DeploymentFormData = {
+  name: string
+  namespace: string
+  replicas: number
+  image: string
+  port: number
+  targetPort: number
+  protocol: string
+  labels: Array<{ key: string; value: string }>
+  env: Array<{ key: string; value: string }>
+}
+
+export type ServiceFormData = {
+  name: string
+  namespace: string
+  type: 'ClusterIP' | 'NodePort' | 'LoadBalancer'
+  selector: Array<{ key: string; value: string }>
+  port: number
+  targetPort: number
+  protocol: string
+}
+
+export type ConfigMapFormData = {
+  name: string
+  namespace: string
+  data: Array<{ key: string; value: string }>
+}
+
+export type SecretFormData = {
+  name: string
+  namespace: string
+  type: 'Opaque' | 'kubernetes.io/service-account-token' | 'kubernetes.io/dockercfg' | 'kubernetes.io/dockerconfigjson'
+  data: Array<{ key: string; value: string }>
+}
+
+export type NamespaceFormData = {
+  name: string
+}
+
+export type IngressFormData = {
+  name: string
+  namespace: string
+  ingressClass?: string
+  host: string
+  serviceName: string
+  servicePort: number
+  tls: boolean
+  tlsSecret?: string
+}
+
+export type PodExecData = {
+  namespace: string
+  podName: string
+  containerName?: string
+  command: string
 }
 
 declare global {

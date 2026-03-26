@@ -952,3 +952,160 @@ body {
 .terminal-container .xterm-viewport {
   overflow-y: auto;
 }
+
+/* Table row actions */
+.table-row-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.action-btn {
+  padding: 4px 10px;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.logs-btn {
+  background: #3b82f6;
+  color: white;
+}
+
+.logs-btn:hover {
+  background: #2563eb;
+}
+
+/* Log Viewer Modal */
+.log-viewer-modal {
+  max-width: 900px;
+  height: 70vh;
+}
+
+.log-viewer-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 20px;
+  border-bottom: 1px solid #e2e8f0;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.log-viewer-filters {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.log-viewer-select {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.log-viewer-select label {
+  font-size: 13px;
+  color: #64748b;
+}
+
+.log-viewer-select select {
+  padding: 6px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  font-size: 13px;
+  background: white;
+  cursor: pointer;
+}
+
+.log-viewer-select select:focus {
+  outline: none;
+  border-color: #3b82f6;
+}
+
+.log-viewer-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.log-viewer-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #64748b;
+  cursor: pointer;
+}
+
+.log-viewer-checkbox input {
+  cursor: pointer;
+}
+
+.log-viewer-btn {
+  padding: 6px 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  font-size: 13px;
+  background: white;
+  color: #0f172a;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.log-viewer-btn:hover {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+}
+
+.log-viewer-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.log-viewer-body {
+  flex: 1;
+  overflow: hidden;
+  background: #0f172a;
+  padding: 12px;
+}
+
+.log-viewer-loading {
+  color: #94a3b8;
+  text-align: center;
+  padding: 40px;
+}
+
+.log-viewer-error {
+  color: #ef4444;
+  text-align: center;
+  padding: 40px;
+}
+
+.log-viewer-content {
+  margin: 0;
+  padding: 0;
+  font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #e2e8f0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-y: auto;
+  max-height: 100%;
+}
+
+.log-viewer-footer {
+  padding: 10px 20px;
+  border-top: 1px solid #e2e8f0;
+  background: #f8fafc;
+}
+
+.log-viewer-info {
+  font-size: 12px;
+  color: #64748b;
+}
