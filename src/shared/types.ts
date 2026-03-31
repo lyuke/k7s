@@ -241,6 +241,91 @@ export type IngressInfo = {
   labels?: Record<string, string>
 }
 
+export type PersistentVolumeInfo = {
+  name: string
+  capacity: string
+  accessModes: string
+  reclaimPolicy: string
+  status: string
+  storageClass: string
+  age: string
+}
+
+export type PersistentVolumeClaimInfo = {
+  name: string
+  namespace: string
+  status: string
+  capacity: string
+  accessModes: string
+  storageClass: string
+  age: string
+}
+
+export type StorageClassInfo = {
+  name: string
+  provisioner: string
+  reclaimPolicy: string
+  volumeBindingMode: string
+  age: string
+}
+
+export type ServiceAccountInfo = {
+  name: string
+  namespace: string
+  secrets: number
+  age: string
+}
+
+export type RoleInfo = {
+  name: string
+  namespace: string
+  rules: number
+  age: string
+}
+
+export type RoleBindingInfo = {
+  name: string
+  namespace: string
+  roleRef: string
+  subjects: number
+  age: string
+}
+
+export type ClusterRoleInfo = {
+  name: string
+  rules: number
+  age: string
+}
+
+export type ClusterRoleBindingInfo = {
+  name: string
+  roleRef: string
+  subjects: number
+  age: string
+}
+
+export type HPAInfo = {
+  name: string
+  namespace: string
+  reference: string
+  minPods: number
+  maxPods: number
+  currentReplicas: number
+  desiredReplicas: number
+  age: string
+}
+
+export type EventInfo = {
+  name: string
+  namespace: string
+  reason: string
+  message: string
+  type: string
+  object: string
+  count: number
+  age: string
+}
+
 export type ScaleResult = {
   success: boolean
   replicas: number
@@ -265,6 +350,16 @@ export type ResourceType =
   | 'configmaps'
   | 'secrets'
   | 'ingresses'
+  | 'persistentvolumes'
+  | 'persistentvolumeclaims'
+  | 'storageclasses'
+  | 'serviceaccounts'
+  | 'roles'
+  | 'rolebindings'
+  | 'clusterroles'
+  | 'clusterrolebindings'
+  | 'horizontalpodautoscalers'
+  | 'events'
 
 export type ContextGroup = {
   id: string

@@ -1,20 +1,30 @@
 import { create } from 'zustand'
 import {
   ClusterHealth,
+  ClusterRoleBindingInfo,
+  ClusterRoleInfo,
   ConfigMapInfo,
   ContextRecord,
+  CronJobInfo,
+  DaemonSetInfo,
+  DeploymentInfo,
+  EventInfo,
+  HPAInfo,
   IngressInfo,
+  JobInfo,
   NamespaceInfo,
   NodeInfo,
+  PersistentVolumeClaimInfo,
+  PersistentVolumeInfo,
   PodInfo,
-  DeploymentInfo,
-  DaemonSetInfo,
-  StatefulSetInfo,
   ReplicaSetInfo,
-  JobInfo,
-  CronJobInfo,
+  RoleBindingInfo,
+  RoleInfo,
   SecretInfo,
+  ServiceAccountInfo,
   ServiceInfo,
+  StatefulSetInfo,
+  StorageClassInfo,
 } from '../../../shared/types'
 import { k8sApi } from '../api/provider'
 
@@ -38,6 +48,16 @@ interface ClusterState {
   configMaps: ConfigMapInfo[]
   secrets: SecretInfo[]
   ingresses: IngressInfo[]
+  persistentVolumes: PersistentVolumeInfo[]
+  persistentVolumeClaims: PersistentVolumeClaimInfo[]
+  storageClasses: StorageClassInfo[]
+  serviceAccounts: ServiceAccountInfo[]
+  roles: RoleInfo[]
+  roleBindings: RoleBindingInfo[]
+  clusterRoles: ClusterRoleInfo[]
+  clusterRoleBindings: ClusterRoleBindingInfo[]
+  hpas: HPAInfo[]
+  events: EventInfo[]
   clusterHealth: ClusterHealth | null
   status: LoadState
   error: string
@@ -78,6 +98,16 @@ export const useClusterStore = create<ClusterState>((set, get) => ({
   configMaps: [],
   secrets: [],
   ingresses: [],
+  persistentVolumes: [],
+  persistentVolumeClaims: [],
+  storageClasses: [],
+  serviceAccounts: [],
+  roles: [],
+  roleBindings: [],
+  clusterRoles: [],
+  clusterRoleBindings: [],
+  hpas: [],
+  events: [],
   clusterHealth: null,
   status: 'idle',
   error: '',
@@ -186,17 +216,52 @@ export const useClusterStore = create<ClusterState>((set, get) => ({
 
     try {
       const ns = selectedNamespace === 'all' ? undefined : selectedNamespace
-      const [serviceList, configMapList, secretList, ingressList] = await Promise.all([
+      const [
+        serviceList,
+        configMapList,
+        secretList,
+        ingressList,
+        pvList,
+        pvcList,
+        scList,
+        saList,
+        roleList,
+        roleBindingList,
+        crList,
+        crbList,
+        hpaList,
+        eventList
+      ] = await Promise.all([
         k8sApi.listServices(selectedId, ns),
         k8sApi.listConfigMaps(selectedId, ns),
         k8sApi.listSecrets(selectedId, ns),
-        k8sApi.listIngresses(selectedId, ns)
+        k8sApi.listIngresses(selectedId, ns),
+        k8sApi.listPersistentVolumes(selectedId),
+        k8sApi.listPersistentVolumeClaims(selectedId, ns),
+        k8sApi.listStorageClasses(selectedId),
+        k8sApi.listServiceAccounts(selectedId, ns),
+        k8sApi.listRoles(selectedId, ns),
+        k8sApi.listRoleBindings(selectedId, ns),
+        k8sApi.listClusterRoles(selectedId),
+        k8sApi.listClusterRoleBindings(selectedId),
+        k8sApi.listHPAs(selectedId, ns),
+        k8sApi.listEvents(selectedId, ns)
       ])
       set({
         services: serviceList,
         configMaps: configMapList,
         secrets: secretList,
-        ingresses: ingressList
+        ingresses: ingressList,
+        persistentVolumes: pvList,
+        persistentVolumeClaims: pvcList,
+        storageClasses: scList,
+        serviceAccounts: saList,
+        roles: roleList,
+        roleBindings: roleBindingList,
+        clusterRoles: crList,
+        clusterRoleBindings: crbList,
+        hpas: hpaList,
+        events: eventList
       })
     } catch {
       // Silently fail for new resource types

@@ -39,20 +39,30 @@ import {
   getPodLogs,
   getReplicaSetDetail,
   getStatefulSetDetail,
+  listClusterRoleBindings,
+  listClusterRoles,
   listConfigMaps,
   listContexts,
   listCronJobs,
   listDaemonSets,
   listDeployments,
+  listEvents,
+  listHPAs,
   listIngresses,
   listJobs,
   listNamespaces,
   listNodes,
+  listPersistentVolumeClaims,
+  listPersistentVolumes,
   listPods,
   listReplicaSets,
+  listRoleBindings,
+  listRoles,
   listSecrets,
+  listServiceAccounts,
   listServices,
   listStatefulSets,
+  listStorageClasses,
   scaleDeployment,
   scaleReplicaSet,
   scaleStatefulSet,
@@ -449,6 +459,46 @@ ipcMain.handle('k7s:list-secrets', wrapHandler(async (_event: IpcMainInvokeEvent
 
 ipcMain.handle('k7s:list-ingresses', wrapHandler(async (_event: IpcMainInvokeEvent, contextId: string, namespace?: string) => {
   return listIngresses(contextId, namespace)
+}))
+
+ipcMain.handle('k7s:list-persistentvolumes', wrapHandler(async (_event: IpcMainInvokeEvent, contextId: string) => {
+  return listPersistentVolumes(contextId)
+}))
+
+ipcMain.handle('k7s:list-persistentvolumeclaims', wrapHandler(async (_event: IpcMainInvokeEvent, contextId: string, namespace?: string) => {
+  return listPersistentVolumeClaims(contextId, namespace)
+}))
+
+ipcMain.handle('k7s:list-storageclasses', wrapHandler(async (_event: IpcMainInvokeEvent, contextId: string) => {
+  return listStorageClasses(contextId)
+}))
+
+ipcMain.handle('k7s:list-serviceaccounts', wrapHandler(async (_event: IpcMainInvokeEvent, contextId: string, namespace?: string) => {
+  return listServiceAccounts(contextId, namespace)
+}))
+
+ipcMain.handle('k7s:list-roles', wrapHandler(async (_event: IpcMainInvokeEvent, contextId: string, namespace?: string) => {
+  return listRoles(contextId, namespace)
+}))
+
+ipcMain.handle('k7s:list-rolebindings', wrapHandler(async (_event: IpcMainInvokeEvent, contextId: string, namespace?: string) => {
+  return listRoleBindings(contextId, namespace)
+}))
+
+ipcMain.handle('k7s:list-clusterroles', wrapHandler(async (_event: IpcMainInvokeEvent, contextId: string) => {
+  return listClusterRoles(contextId)
+}))
+
+ipcMain.handle('k7s:list-clusterrolebindings', wrapHandler(async (_event: IpcMainInvokeEvent, contextId: string) => {
+  return listClusterRoleBindings(contextId)
+}))
+
+ipcMain.handle('k7s:list-horizontalpodautoscalers', wrapHandler(async (_event: IpcMainInvokeEvent, contextId: string, namespace?: string) => {
+  return listHPAs(contextId, namespace)
+}))
+
+ipcMain.handle('k7s:list-events', wrapHandler(async (_event: IpcMainInvokeEvent, contextId: string, namespace?: string) => {
+  return listEvents(contextId, namespace)
 }))
 
 // Create operations

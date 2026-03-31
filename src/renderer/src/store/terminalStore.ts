@@ -61,13 +61,11 @@ export const useTerminalInit = (showTerminal: boolean, selectedId: string, conta
 
     term.open(containerRef.current)
     fitAddon.fit()
+    term.focus()
 
     terminalRef.current = term
 
-    k8sTerm.create(selectedId).then(({ shell, cwd }) => {
-      term.write(`Connected to cluster (${shell})\r\n`)
-      term.write(`${cwd}$ `)
-
+    k8sTerm.create(selectedId).then(() => {
       term.onData((data) => {
         k8sTerm.write(data)
       })

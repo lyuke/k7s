@@ -4,6 +4,8 @@
 import {
   AddContextsResult,
   ClusterHealth,
+  ClusterRoleBindingInfo,
+  ClusterRoleInfo,
   ConfigMapInfo,
   ConfigMapFormData,
   ContextRecord,
@@ -13,19 +15,27 @@ import {
   DeleteResult,
   DeploymentFormData,
   DeploymentInfo,
+  EventInfo,
+  HPAInfo,
   IngressFormData,
   IngressInfo,
   JobInfo,
   NamespaceInfo,
   NodeInfo,
+  PersistentVolumeClaimInfo,
+  PersistentVolumeInfo,
   PodInfo,
   ReplicaSetInfo,
+  RoleBindingInfo,
+  RoleInfo,
   ScaleResult,
   SecretFormData,
   SecretInfo,
+  ServiceAccountInfo,
   ServiceFormData,
   ServiceInfo,
   StatefulSetInfo,
+  StorageClassInfo,
   UpdateResult,
   ContextPrefs,
   ContextGroup
@@ -62,6 +72,16 @@ interface WebSocketApi {
   listConfigMaps: (contextId: string, namespace?: string) => Promise<ConfigMapInfo[]>
   listSecrets: (contextId: string, namespace?: string) => Promise<SecretInfo[]>
   listIngresses: (contextId: string, namespace?: string) => Promise<IngressInfo[]>
+  listPersistentVolumes: (contextId: string) => Promise<PersistentVolumeInfo[]>
+  listPersistentVolumeClaims: (contextId: string, namespace?: string) => Promise<PersistentVolumeClaimInfo[]>
+  listStorageClasses: (contextId: string) => Promise<StorageClassInfo[]>
+  listServiceAccounts: (contextId: string, namespace?: string) => Promise<ServiceAccountInfo[]>
+  listRoles: (contextId: string, namespace?: string) => Promise<RoleInfo[]>
+  listRoleBindings: (contextId: string, namespace?: string) => Promise<RoleBindingInfo[]>
+  listClusterRoles: (contextId: string) => Promise<ClusterRoleInfo[]>
+  listClusterRoleBindings: (contextId: string) => Promise<ClusterRoleBindingInfo[]>
+  listHPAs: (contextId: string, namespace?: string) => Promise<HPAInfo[]>
+  listEvents: (contextId: string, namespace?: string) => Promise<EventInfo[]>
   addKubeconfigFile: () => Promise<AddContextsResult>
   getContextPrefs: () => Promise<ContextPrefs>
   updateContextName: (contextId: string, name: string) => Promise<ContextPrefs>
@@ -202,6 +222,56 @@ export const k8sApi: WebSocketApi = {
   listIngresses: async (contextId: string, namespace?: string) => {
     if (electronApi) return electronApi.listIngresses(contextId, namespace)
     return wsClient.listIngresses(contextId, namespace) as Promise<IngressInfo[]>
+  },
+
+  listPersistentVolumes: async (contextId: string) => {
+    if (electronApi) return electronApi.listPersistentVolumes(contextId)
+    return wsClient.listPersistentVolumes(contextId) as Promise<PersistentVolumeInfo[]>
+  },
+
+  listPersistentVolumeClaims: async (contextId: string, namespace?: string) => {
+    if (electronApi) return electronApi.listPersistentVolumeClaims(contextId, namespace)
+    return wsClient.listPersistentVolumeClaims(contextId, namespace) as Promise<PersistentVolumeClaimInfo[]>
+  },
+
+  listStorageClasses: async (contextId: string) => {
+    if (electronApi) return electronApi.listStorageClasses(contextId)
+    return wsClient.listStorageClasses(contextId) as Promise<StorageClassInfo[]>
+  },
+
+  listServiceAccounts: async (contextId: string, namespace?: string) => {
+    if (electronApi) return electronApi.listServiceAccounts(contextId, namespace)
+    return wsClient.listServiceAccounts(contextId, namespace) as Promise<ServiceAccountInfo[]>
+  },
+
+  listRoles: async (contextId: string, namespace?: string) => {
+    if (electronApi) return electronApi.listRoles(contextId, namespace)
+    return wsClient.listRoles(contextId, namespace) as Promise<RoleInfo[]>
+  },
+
+  listRoleBindings: async (contextId: string, namespace?: string) => {
+    if (electronApi) return electronApi.listRoleBindings(contextId, namespace)
+    return wsClient.listRoleBindings(contextId, namespace) as Promise<RoleBindingInfo[]>
+  },
+
+  listClusterRoles: async (contextId: string) => {
+    if (electronApi) return electronApi.listClusterRoles(contextId)
+    return wsClient.listClusterRoles(contextId) as Promise<ClusterRoleInfo[]>
+  },
+
+  listClusterRoleBindings: async (contextId: string) => {
+    if (electronApi) return electronApi.listClusterRoleBindings(contextId)
+    return wsClient.listClusterRoleBindings(contextId) as Promise<ClusterRoleBindingInfo[]>
+  },
+
+  listHPAs: async (contextId: string, namespace?: string) => {
+    if (electronApi) return electronApi.listHPAs(contextId, namespace)
+    return wsClient.listHPAs(contextId, namespace) as Promise<HPAInfo[]>
+  },
+
+  listEvents: async (contextId: string, namespace?: string) => {
+    if (electronApi) return electronApi.listEvents(contextId, namespace)
+    return wsClient.listEvents(contextId, namespace) as Promise<EventInfo[]>
   },
 
   addKubeconfigFile: async () => {

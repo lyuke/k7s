@@ -322,6 +322,46 @@ class WebSocketClient {
     // In web mode, this will return a message to use desktop app
     return this.send('k7s:add-kubeconfig') as Promise<unknown>
   }
+
+  async listPersistentVolumes(contextId: string) {
+    return this.send('k7s:list-persistentvolumes', { contextId }) as Promise<unknown[]>
+  }
+
+  async listPersistentVolumeClaims(contextId: string, namespace?: string) {
+    return this.send('k7s:list-persistentvolumeclaims', { contextId, namespace }) as Promise<unknown[]>
+  }
+
+  async listStorageClasses(contextId: string) {
+    return this.send('k7s:list-storageclasses', { contextId }) as Promise<unknown[]>
+  }
+
+  async listServiceAccounts(contextId: string, namespace?: string) {
+    return this.send('k7s:list-serviceaccounts', { contextId, namespace }) as Promise<unknown[]>
+  }
+
+  async listRoles(contextId: string, namespace?: string) {
+    return this.send('k7s:list-roles', { contextId, namespace }) as Promise<unknown[]>
+  }
+
+  async listRoleBindings(contextId: string, namespace?: string) {
+    return this.send('k7s:list-rolebindings', { contextId, namespace }) as Promise<unknown[]>
+  }
+
+  async listClusterRoles(contextId: string) {
+    return this.send('k7s:list-clusterroles', { contextId }) as Promise<unknown[]>
+  }
+
+  async listClusterRoleBindings(contextId: string) {
+    return this.send('k7s:list-clusterrolebindings', { contextId }) as Promise<unknown[]>
+  }
+
+  async listHPAs(contextId: string, namespace?: string) {
+    return this.send('k7s:list-horizontalpodautoscalers', { contextId, namespace }) as Promise<unknown[]>
+  }
+
+  async listEvents(contextId: string, namespace?: string) {
+    return this.send('k7s:list-events', { contextId, namespace }) as Promise<unknown[]>
+  }
 }
 
 export const wsClient = new WebSocketClient()

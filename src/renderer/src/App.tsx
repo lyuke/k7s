@@ -25,7 +25,17 @@ const RESOURCE_TYPES: { key: ResourceType; label: string }[] = [
   { key: 'services', label: 'Service' },
   { key: 'configmaps', label: 'ConfigMap' },
   { key: 'secrets', label: 'Secret' },
-  { key: 'ingresses', label: 'Ingress' }
+  { key: 'ingresses', label: 'Ingress' },
+  { key: 'persistentvolumes', label: 'PV' },
+  { key: 'persistentvolumeclaims', label: 'PVC' },
+  { key: 'storageclasses', label: 'StorageClass' },
+  { key: 'serviceaccounts', label: 'ServiceAccount' },
+  { key: 'roles', label: 'Role' },
+  { key: 'rolebindings', label: 'RoleBinding' },
+  { key: 'clusterroles', label: 'ClusterRole' },
+  { key: 'clusterrolebindings', label: 'ClusterRoleBinding' },
+  { key: 'horizontalpodautoscalers', label: 'HPA' },
+  { key: 'events', label: 'Event' }
 ]
 
 interface ClusterCardProps {
@@ -87,6 +97,16 @@ const App = () => {
   const configMaps = useClusterStore((s) => s.configMaps)
   const secrets = useClusterStore((s) => s.secrets)
   const ingresses = useClusterStore((s) => s.ingresses)
+  const persistentVolumes = useClusterStore((s) => s.persistentVolumes)
+  const persistentVolumeClaims = useClusterStore((s) => s.persistentVolumeClaims)
+  const storageClasses = useClusterStore((s) => s.storageClasses)
+  const serviceAccounts = useClusterStore((s) => s.serviceAccounts)
+  const roles = useClusterStore((s) => s.roles)
+  const roleBindings = useClusterStore((s) => s.roleBindings)
+  const clusterRoles = useClusterStore((s) => s.clusterRoles)
+  const clusterRoleBindings = useClusterStore((s) => s.clusterRoleBindings)
+  const hpas = useClusterStore((s) => s.hpas)
+  const events = useClusterStore((s) => s.events)
   const clusterHealth = useClusterStore((s) => s.clusterHealth)
   const status = useClusterStore((s) => s.status)
   const error = useClusterStore((s) => s.error)
@@ -187,18 +207,16 @@ const App = () => {
 
   // Terminal store
   const showTerminal = useTerminalStore((s) => s.showTerminal)
-  const terminalContainerRef = useTerminalStore((s) => s.terminalContainerRef)
   const toggleTerminal = useTerminalStore((s) => s.toggleTerminal)
   const setShowTerminal = useTerminalStore((s) => s.setShowTerminal)
-  const setTerminalContainerRef = useTerminalStore((s) => s.setTerminalContainerRef)
+  const terminalRef = useRef<HTMLDivElement>(null)
 
   // Initialize terminal with effect
-  useTerminalInit(showTerminal, selectedId, terminalContainerRef)
+  useTerminalInit(showTerminal, selectedId, terminalRef)
 
   // Additional local state
   const [isAdding, setIsAdding] = useState(false)
   const refreshTimerRef = useRef<NodeJS.Timeout | null>(null)
-  const terminalRef = useRef<HTMLDivElement>(null)
 
   // Context map for quick lookup
   const ctxMap = useMemo(() => {
@@ -270,11 +288,6 @@ const App = () => {
     if (status === 'ready') return 'ready'
     if (status === 'error') return 'error'
     return ''
-  }
-
-  // Set terminal container ref
-  const setTerminalRef = (ref: HTMLDivElement | null) => {
-    setTerminalContainerRef({ current: ref } as React.RefObject<HTMLDivElement | null>)
   }
 
   // Render resource table based on selected type
@@ -647,6 +660,264 @@ const App = () => {
               </div>
             ))}
             {sortedIngresses.length === 0 && <div className="table-empty">暂无Ingress数据</div>}
+          </div>
+        )
+
+      case 'persistentvolumes':
+        const filteredPVs = filterData(persistentVolumes)
+        const sortedPVs = sortData(filteredPVs)
+        return (
+          <div className="table">
+            <div className="table-row table-head">
+              <div onClick={handleHeaderClick('name')}>名称 <SortIcon direction={sortField === 'name' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('capacity')}>容量 <SortIcon direction={sortField === 'capacity' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('accessModes')}>访问模式 <SortIcon direction={sortField === 'accessModes' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('reclaimPolicy')}>回收策略 <SortIcon direction={sortField === 'reclaimPolicy' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('status')}>状态 <SortIcon direction={sortField === 'status' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('storageClass')}>StorageClass <SortIcon direction={sortField === 'storageClass' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('age')}>存活 <SortIcon direction={sortField === 'age' ? sortDirection : undefined} /></div>
+            </div>
+            {sortedPVs.map((pv) => (
+              <div className="table-row" key={pv.name}>
+                <div>{pv.name}</div>
+                <div>{pv.capacity}</div>
+                <div>{pv.accessModes}</div>
+                <div>{pv.reclaimPolicy}</div>
+                <div>{pv.status}</div>
+                <div>{pv.storageClass || '-'}</div>
+                <div>{pv.age}</div>
+              </div>
+            ))}
+            {sortedPVs.length === 0 && <div className="table-empty">暂无PersistentVolume数据</div>}
+          </div>
+        )
+
+      case 'persistentvolumeclaims':
+        const filteredPVCs = filterData(persistentVolumeClaims)
+        const sortedPVCs = sortData(filteredPVCs)
+        return (
+          <div className="table">
+            <div className="table-row table-head">
+              <div onClick={handleHeaderClick('name')}>名称 <SortIcon direction={sortField === 'name' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('namespace')}>命名空间 <SortIcon direction={sortField === 'namespace' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('status')}>状态 <SortIcon direction={sortField === 'status' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('capacity')}>容量 <SortIcon direction={sortField === 'capacity' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('accessModes')}>访问模式 <SortIcon direction={sortField === 'accessModes' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('storageClass')}>StorageClass <SortIcon direction={sortField === 'storageClass' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('age')}>存活 <SortIcon direction={sortField === 'age' ? sortDirection : undefined} /></div>
+            </div>
+            {sortedPVCs.map((pvc) => (
+              <div className="table-row" key={`${pvc.namespace}-${pvc.name}`}>
+                <div>{pvc.name}</div>
+                <div>{pvc.namespace}</div>
+                <div>{pvc.status}</div>
+                <div>{pvc.capacity}</div>
+                <div>{pvc.accessModes}</div>
+                <div>{pvc.storageClass || '-'}</div>
+                <div>{pvc.age}</div>
+              </div>
+            ))}
+            {sortedPVCs.length === 0 && <div className="table-empty">暂无PersistentVolumeClaim数据</div>}
+          </div>
+        )
+
+      case 'storageclasses':
+        const filteredSCs = filterData(storageClasses)
+        const sortedSCs = sortData(filteredSCs)
+        return (
+          <div className="table">
+            <div className="table-row table-head">
+              <div onClick={handleHeaderClick('name')}>名称 <SortIcon direction={sortField === 'name' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('provisioner')}>Provisioner <SortIcon direction={sortField === 'provisioner' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('reclaimPolicy')}>回收策略 <SortIcon direction={sortField === 'reclaimPolicy' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('volumeBindingMode')}>绑定模式 <SortIcon direction={sortField === 'volumeBindingMode' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('age')}>存活 <SortIcon direction={sortField === 'age' ? sortDirection : undefined} /></div>
+            </div>
+            {sortedSCs.map((sc) => (
+              <div className="table-row" key={sc.name}>
+                <div>{sc.name}</div>
+                <div>{sc.provisioner}</div>
+                <div>{sc.reclaimPolicy}</div>
+                <div>{sc.volumeBindingMode}</div>
+                <div>{sc.age}</div>
+              </div>
+            ))}
+            {sortedSCs.length === 0 && <div className="table-empty">暂无StorageClass数据</div>}
+          </div>
+        )
+
+      case 'serviceaccounts':
+        const filteredSAs = filterData(serviceAccounts)
+        const sortedSAs = sortData(filteredSAs)
+        return (
+          <div className="table">
+            <div className="table-row table-head">
+              <div onClick={handleHeaderClick('name')}>名称 <SortIcon direction={sortField === 'name' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('namespace')}>命名空间 <SortIcon direction={sortField === 'namespace' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('secrets')}>Secrets <SortIcon direction={sortField === 'secrets' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('age')}>存活 <SortIcon direction={sortField === 'age' ? sortDirection : undefined} /></div>
+            </div>
+            {sortedSAs.map((sa) => (
+              <div className="table-row" key={`${sa.namespace}-${sa.name}`}>
+                <div>{sa.name}</div>
+                <div>{sa.namespace}</div>
+                <div>{sa.secrets}</div>
+                <div>{sa.age}</div>
+              </div>
+            ))}
+            {sortedSAs.length === 0 && <div className="table-empty">暂无ServiceAccount数据</div>}
+          </div>
+        )
+
+      case 'roles':
+        const filteredRoles = filterData(roles)
+        const sortedRoles = sortData(filteredRoles)
+        return (
+          <div className="table">
+            <div className="table-row table-head">
+              <div onClick={handleHeaderClick('name')}>名称 <SortIcon direction={sortField === 'name' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('namespace')}>命名空间 <SortIcon direction={sortField === 'namespace' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('rules')}>规则数 <SortIcon direction={sortField === 'rules' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('age')}>存活 <SortIcon direction={sortField === 'age' ? sortDirection : undefined} /></div>
+            </div>
+            {sortedRoles.map((role) => (
+              <div className="table-row" key={`${role.namespace}-${role.name}`}>
+                <div>{role.name}</div>
+                <div>{role.namespace}</div>
+                <div>{role.rules}</div>
+                <div>{role.age}</div>
+              </div>
+            ))}
+            {sortedRoles.length === 0 && <div className="table-empty">暂无Role数据</div>}
+          </div>
+        )
+
+      case 'rolebindings':
+        const filteredRBs = filterData(roleBindings)
+        const sortedRBs = sortData(filteredRBs)
+        return (
+          <div className="table">
+            <div className="table-row table-head">
+              <div onClick={handleHeaderClick('name')}>名称 <SortIcon direction={sortField === 'name' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('namespace')}>命名空间 <SortIcon direction={sortField === 'namespace' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('roleRef')}>RoleRef <SortIcon direction={sortField === 'roleRef' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('subjects')}>主体数 <SortIcon direction={sortField === 'subjects' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('age')}>存活 <SortIcon direction={sortField === 'age' ? sortDirection : undefined} /></div>
+            </div>
+            {sortedRBs.map((rb) => (
+              <div className="table-row" key={`${rb.namespace}-${rb.name}`}>
+                <div>{rb.name}</div>
+                <div>{rb.namespace}</div>
+                <div>{rb.roleRef}</div>
+                <div>{rb.subjects}</div>
+                <div>{rb.age}</div>
+              </div>
+            ))}
+            {sortedRBs.length === 0 && <div className="table-empty">暂无RoleBinding数据</div>}
+          </div>
+        )
+
+      case 'clusterroles':
+        const filteredCRs = filterData(clusterRoles)
+        const sortedCRs = sortData(filteredCRs)
+        return (
+          <div className="table">
+            <div className="table-row table-head">
+              <div onClick={handleHeaderClick('name')}>名称 <SortIcon direction={sortField === 'name' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('rules')}>规则数 <SortIcon direction={sortField === 'rules' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('age')}>存活 <SortIcon direction={sortField === 'age' ? sortDirection : undefined} /></div>
+            </div>
+            {sortedCRs.map((cr) => (
+              <div className="table-row" key={cr.name}>
+                <div>{cr.name}</div>
+                <div>{cr.rules}</div>
+                <div>{cr.age}</div>
+              </div>
+            ))}
+            {sortedCRs.length === 0 && <div className="table-empty">暂无ClusterRole数据</div>}
+          </div>
+        )
+
+      case 'clusterrolebindings':
+        const filteredCRBs = filterData(clusterRoleBindings)
+        const sortedCRBs = sortData(filteredCRBs)
+        return (
+          <div className="table">
+            <div className="table-row table-head">
+              <div onClick={handleHeaderClick('name')}>名称 <SortIcon direction={sortField === 'name' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('roleRef')}>RoleRef <SortIcon direction={sortField === 'roleRef' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('subjects')}>主体数 <SortIcon direction={sortField === 'subjects' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('age')}>存活 <SortIcon direction={sortField === 'age' ? sortDirection : undefined} /></div>
+            </div>
+            {sortedCRBs.map((crb) => (
+              <div className="table-row" key={crb.name}>
+                <div>{crb.name}</div>
+                <div>{crb.roleRef}</div>
+                <div>{crb.subjects}</div>
+                <div>{crb.age}</div>
+              </div>
+            ))}
+            {sortedCRBs.length === 0 && <div className="table-empty">暂无ClusterRoleBinding数据</div>}
+          </div>
+        )
+
+      case 'horizontalpodautoscalers':
+        const filteredHPAs = filterData(hpas)
+        const sortedHPAs = sortData(filteredHPAs)
+        return (
+          <div className="table">
+            <div className="table-row table-head">
+              <div onClick={handleHeaderClick('name')}>名称 <SortIcon direction={sortField === 'name' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('namespace')}>命名空间 <SortIcon direction={sortField === 'namespace' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('reference')}>目标资源 <SortIcon direction={sortField === 'reference' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('minPods')}>最小副本 <SortIcon direction={sortField === 'minPods' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('maxPods')}>最大副本 <SortIcon direction={sortField === 'maxPods' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('currentReplicas')}>当前副本 <SortIcon direction={sortField === 'currentReplicas' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('desiredReplicas')}>期望副本 <SortIcon direction={sortField === 'desiredReplicas' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('age')}>存活 <SortIcon direction={sortField === 'age' ? sortDirection : undefined} /></div>
+            </div>
+            {sortedHPAs.map((hpa) => (
+              <div className="table-row" key={`${hpa.namespace}-${hpa.name}`}>
+                <div>{hpa.name}</div>
+                <div>{hpa.namespace}</div>
+                <div>{hpa.reference}</div>
+                <div>{hpa.minPods}</div>
+                <div>{hpa.maxPods}</div>
+                <div>{hpa.currentReplicas}</div>
+                <div>{hpa.desiredReplicas}</div>
+                <div>{hpa.age}</div>
+              </div>
+            ))}
+            {sortedHPAs.length === 0 && <div className="table-empty">暂无HPA数据</div>}
+          </div>
+        )
+
+      case 'events':
+        const filteredEvents = filterData(events)
+        const sortedEvents = sortData(filteredEvents)
+        return (
+          <div className="table">
+            <div className="table-row table-head">
+              <div onClick={handleHeaderClick('namespace')}>命名空间 <SortIcon direction={sortField === 'namespace' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('type')}>类型 <SortIcon direction={sortField === 'type' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('reason')}>原因 <SortIcon direction={sortField === 'reason' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('object')}>对象 <SortIcon direction={sortField === 'object' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('message')}>消息 <SortIcon direction={sortField === 'message' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('count')}>次数 <SortIcon direction={sortField === 'count' ? sortDirection : undefined} /></div>
+              <div onClick={handleHeaderClick('age')}>时间 <SortIcon direction={sortField === 'age' ? sortDirection : undefined} /></div>
+            </div>
+            {sortedEvents.map((ev) => (
+              <div className={`table-row${ev.type === 'Warning' ? ' row-warning' : ''}`} key={`${ev.namespace}-${ev.name}`}>
+                <div>{ev.namespace}</div>
+                <div>{ev.type}</div>
+                <div>{ev.reason}</div>
+                <div>{ev.object}</div>
+                <div className="cell-truncate" title={ev.message}>{ev.message}</div>
+                <div>{ev.count}</div>
+                <div>{ev.age}</div>
+              </div>
+            ))}
+            {sortedEvents.length === 0 && <div className="table-empty">暂无Event数据</div>}
           </div>
         )
 
@@ -1324,7 +1595,7 @@ const App = () => {
             <span>Terminal</span>
             <button className="terminal-close" onClick={() => setShowTerminal(false)}>×</button>
           </div>
-          <div className="terminal-container" ref={setTerminalRef} />
+          <div className="terminal-container" ref={terminalRef} />
         </div>
       )}
     </div>

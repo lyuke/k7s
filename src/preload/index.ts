@@ -2,6 +2,8 @@ import { contextBridge, ipcRenderer } from 'electron'
 import {
   AddContextsResult,
   ClusterHealth,
+  ClusterRoleBindingInfo,
+  ClusterRoleInfo,
   ConfigMapFormData,
   ConfigMapInfo,
   ContextRecord,
@@ -11,19 +13,27 @@ import {
   DeleteResult,
   DeploymentFormData,
   DeploymentInfo,
+  EventInfo,
+  HPAInfo,
   IngressFormData,
   IngressInfo,
   JobInfo,
   NamespaceInfo,
   NodeInfo,
+  PersistentVolumeClaimInfo,
+  PersistentVolumeInfo,
   PodInfo,
   ReplicaSetInfo,
+  RoleBindingInfo,
+  RoleInfo,
   ScaleResult,
   SecretFormData,
   SecretInfo,
+  ServiceAccountInfo,
   ServiceFormData,
   ServiceInfo,
   StatefulSetInfo,
+  StorageClassInfo,
   UpdateResult,
   ContextPrefs,
   ContextGroup
@@ -118,6 +128,26 @@ contextBridge.exposeInMainWorld('k7s', {
     ipcRenderer.invoke('k7s:list-secrets', contextId, namespace),
   listIngresses: (contextId: string, namespace?: string): Promise<IngressInfo[]> =>
     ipcRenderer.invoke('k7s:list-ingresses', contextId, namespace),
+  listPersistentVolumes: (contextId: string): Promise<PersistentVolumeInfo[]> =>
+    ipcRenderer.invoke('k7s:list-persistentvolumes', contextId),
+  listPersistentVolumeClaims: (contextId: string, namespace?: string): Promise<PersistentVolumeClaimInfo[]> =>
+    ipcRenderer.invoke('k7s:list-persistentvolumeclaims', contextId, namespace),
+  listStorageClasses: (contextId: string): Promise<StorageClassInfo[]> =>
+    ipcRenderer.invoke('k7s:list-storageclasses', contextId),
+  listServiceAccounts: (contextId: string, namespace?: string): Promise<ServiceAccountInfo[]> =>
+    ipcRenderer.invoke('k7s:list-serviceaccounts', contextId, namespace),
+  listRoles: (contextId: string, namespace?: string): Promise<RoleInfo[]> =>
+    ipcRenderer.invoke('k7s:list-roles', contextId, namespace),
+  listRoleBindings: (contextId: string, namespace?: string): Promise<RoleBindingInfo[]> =>
+    ipcRenderer.invoke('k7s:list-rolebindings', contextId, namespace),
+  listClusterRoles: (contextId: string): Promise<ClusterRoleInfo[]> =>
+    ipcRenderer.invoke('k7s:list-clusterroles', contextId),
+  listClusterRoleBindings: (contextId: string): Promise<ClusterRoleBindingInfo[]> =>
+    ipcRenderer.invoke('k7s:list-clusterrolebindings', contextId),
+  listHPAs: (contextId: string, namespace?: string): Promise<HPAInfo[]> =>
+    ipcRenderer.invoke('k7s:list-horizontalpodautoscalers', contextId, namespace),
+  listEvents: (contextId: string, namespace?: string): Promise<EventInfo[]> =>
+    ipcRenderer.invoke('k7s:list-events', contextId, namespace),
 
   // Create operations
   createNamespace: (contextId: string, name: string): Promise<CreateResult> =>
@@ -157,9 +187,11 @@ contextBridge.exposeInMainWorld('k8sTerm', {
     ipcRenderer.invoke('terminal:destroy')
   },
   onData: (callback: (data: string) => void): void => {
+    ipcRenderer.removeAllListeners('terminal:data')
     ipcRenderer.on('terminal:data', (_event, data) => callback(data))
   },
   onExit: (callback: (exitCode: number) => void): void => {
+    ipcRenderer.removeAllListeners('terminal:exit')
     ipcRenderer.on('terminal:exit', (_event, exitCode) => callback(exitCode))
   }
 })

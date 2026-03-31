@@ -1,25 +1,38 @@
 import {
   AppsV1Api,
+  AutoscalingV2Api,
   BatchV1Api,
   CoreV1Api,
   CustomObjectsApi,
   KubeConfig,
   NetworkingV1Api,
+  RbacAuthorizationV1Api,
+  StorageV1Api,
   V1APIVersions,
+  V1ClusterRole,
+  V1ClusterRoleBinding,
+  V1ConfigMap,
   V1CronJob,
-  V1DeleteOptions,
   V1DaemonSet,
+  V1DeleteOptions,
   V1Deployment,
   V1Job,
   V1Namespace,
   V1Node,
+  V1PersistentVolume,
+  V1PersistentVolumeClaim,
   V1Pod,
   V1ReplicaSet,
+  V1Role,
+  V1RoleBinding,
   V1Secret,
   V1Service,
-  V1ConfigMap,
+  V1ServiceAccount,
   V1StatefulSet,
-  V1Ingress
+  V1StorageClass,
+  V1Ingress,
+  V2HorizontalPodAutoscaler,
+  CoreV1Event
 } from '@kubernetes/client-node'
 import { app } from 'electron'
 import fs from 'node:fs/promises'
@@ -28,6 +41,8 @@ import { load as yamlLoad } from 'js-yaml'
 import {
   AddContextsResult,
   ClusterHealth,
+  ClusterRoleBindingInfo,
+  ClusterRoleInfo,
   ConfigMapFormData,
   ConfigMapInfo,
   ContextRecord,
@@ -37,21 +52,29 @@ import {
   DeploymentFormData,
   DeploymentInfo,
   DeleteResult,
+  EventInfo,
+  HPAInfo,
   IngressFormData,
   IngressInfo,
   JobInfo,
   NamespaceInfo,
   NodeCapacity,
   NodeInfo,
+  PersistentVolumeClaimInfo,
+  PersistentVolumeInfo,
   PodContainer,
   PodInfo,
   ReplicaSetInfo,
+  RoleBindingInfo,
+  RoleInfo,
   ScaleResult,
   SecretFormData,
   SecretInfo,
+  ServiceAccountInfo,
   ServiceFormData,
   ServiceInfo,
   StatefulSetInfo,
+  StorageClassInfo,
   UpdateResult,
   ContextPrefs,
   ContextGroup
@@ -345,6 +368,21 @@ const createNetworkingV1Api = (entry: ContextEntry): NetworkingV1Api => {
 const createCustomObjectsApi = (entry: ContextEntry): CustomObjectsApi => {
   setupKubeConfig(entry)
   return entry.kubeConfig.makeApiClient(CustomObjectsApi)
+}
+
+const createRbacV1Api = (entry: ContextEntry): RbacAuthorizationV1Api => {
+  setupKubeConfig(entry)
+  return entry.kubeConfig.makeApiClient(RbacAuthorizationV1Api)
+}
+
+const createStorageV1Api = (entry: ContextEntry): StorageV1Api => {
+  setupKubeConfig(entry)
+  return entry.kubeConfig.makeApiClient(StorageV1Api)
+}
+
+const createAutoscalingV2Api = (entry: ContextEntry): AutoscalingV2Api => {
+  setupKubeConfig(entry)
+  return entry.kubeConfig.makeApiClient(AutoscalingV2Api)
 }
 
 const roleFromLabels = (labels: Record<string, string>): string => {
@@ -1635,5 +1673,246 @@ export const getResourceYaml = async (
     throw new Error(`Resource ${kind}/${name} not found`)
   } catch (err) {
     throw new Error(`获取YAML失败: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+export const listPersistentVolumes = async (contextId: string): Promise<PersistentVolumeInfo[]> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+  const api = createCoreV1Api(entry)
+  try {
+    const res = await api.listPersistentVolume()
+    const typedRes = res as { body?: { items?: V1PersistentVolume[] }; items?: V1PersistentVolume[] }
+    const items = typedRes.body?.items ?? typedRes.items ?? []
+    return items.map((pv) => ({
+      name: pv.metadata?.name ?? '',
+      capacity: pv.spec?.capacity?.['storage'] ?? '',
+      accessModes: pv.spec?.accessModes?.join(', ') ?? '',
+      reclaimPolicy: pv.spec?.persistentVolumeReclaimPolicy ?? '',
+      status: pv.status?.phase ?? '',
+      storageClass: pv.spec?.storageClassName ?? '',
+      age: formatAge(pv.metadata?.creationTimestamp)
+    }))
+  } catch (err) {
+    throw new Error(`获取PersistentVolume失败: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+export const listPersistentVolumeClaims = async (contextId: string, namespace?: string): Promise<PersistentVolumeClaimInfo[]> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+  const api = createCoreV1Api(entry)
+  try {
+    let res: unknown
+    if (namespace && namespace !== 'all') {
+      res = await api.listNamespacedPersistentVolumeClaim({ namespace })
+    } else {
+      res = await api.listPersistentVolumeClaimForAllNamespaces()
+    }
+    const typedRes = res as { body?: { items?: V1PersistentVolumeClaim[] }; items?: V1PersistentVolumeClaim[] }
+    const items = typedRes.body?.items ?? typedRes.items ?? []
+    return items.map((pvc) => ({
+      name: pvc.metadata?.name ?? '',
+      namespace: pvc.metadata?.namespace ?? '',
+      status: pvc.status?.phase ?? '',
+      capacity: pvc.status?.capacity?.['storage'] ?? pvc.spec?.resources?.requests?.['storage'] ?? '',
+      accessModes: pvc.spec?.accessModes?.join(', ') ?? '',
+      storageClass: pvc.spec?.storageClassName ?? '',
+      age: formatAge(pvc.metadata?.creationTimestamp)
+    }))
+  } catch (err) {
+    throw new Error(`获取PersistentVolumeClaim失败: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+export const listStorageClasses = async (contextId: string): Promise<StorageClassInfo[]> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+  const api = createStorageV1Api(entry)
+  try {
+    const res = await api.listStorageClass()
+    const typedRes = res as { body?: { items?: V1StorageClass[] }; items?: V1StorageClass[] }
+    const items = typedRes.body?.items ?? typedRes.items ?? []
+    return items.map((sc) => ({
+      name: sc.metadata?.name ?? '',
+      provisioner: sc.provisioner ?? '',
+      reclaimPolicy: sc.reclaimPolicy ?? 'Delete',
+      volumeBindingMode: sc.volumeBindingMode ?? 'Immediate',
+      age: formatAge(sc.metadata?.creationTimestamp)
+    }))
+  } catch (err) {
+    throw new Error(`获取StorageClass失败: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+export const listServiceAccounts = async (contextId: string, namespace?: string): Promise<ServiceAccountInfo[]> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+  const api = createCoreV1Api(entry)
+  try {
+    let res: unknown
+    if (namespace && namespace !== 'all') {
+      res = await api.listNamespacedServiceAccount({ namespace })
+    } else {
+      res = await api.listServiceAccountForAllNamespaces()
+    }
+    const typedRes = res as { body?: { items?: V1ServiceAccount[] }; items?: V1ServiceAccount[] }
+    const items = typedRes.body?.items ?? typedRes.items ?? []
+    return items.map((sa) => ({
+      name: sa.metadata?.name ?? '',
+      namespace: sa.metadata?.namespace ?? '',
+      secrets: sa.secrets?.length ?? 0,
+      age: formatAge(sa.metadata?.creationTimestamp)
+    }))
+  } catch (err) {
+    throw new Error(`获取ServiceAccount失败: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+export const listRoles = async (contextId: string, namespace?: string): Promise<RoleInfo[]> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+  const api = createRbacV1Api(entry)
+  try {
+    let res: unknown
+    if (namespace && namespace !== 'all') {
+      res = await api.listNamespacedRole({ namespace })
+    } else {
+      res = await api.listRoleForAllNamespaces()
+    }
+    const typedRes = res as { body?: { items?: V1Role[] }; items?: V1Role[] }
+    const items = typedRes.body?.items ?? typedRes.items ?? []
+    return items.map((role) => ({
+      name: role.metadata?.name ?? '',
+      namespace: role.metadata?.namespace ?? '',
+      rules: role.rules?.length ?? 0,
+      age: formatAge(role.metadata?.creationTimestamp)
+    }))
+  } catch (err) {
+    throw new Error(`获取Role失败: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+export const listRoleBindings = async (contextId: string, namespace?: string): Promise<RoleBindingInfo[]> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+  const api = createRbacV1Api(entry)
+  try {
+    let res: unknown
+    if (namespace && namespace !== 'all') {
+      res = await api.listNamespacedRoleBinding({ namespace })
+    } else {
+      res = await api.listRoleBindingForAllNamespaces()
+    }
+    const typedRes = res as { body?: { items?: V1RoleBinding[] }; items?: V1RoleBinding[] }
+    const items = typedRes.body?.items ?? typedRes.items ?? []
+    return items.map((rb) => ({
+      name: rb.metadata?.name ?? '',
+      namespace: rb.metadata?.namespace ?? '',
+      roleRef: `${rb.roleRef?.kind ?? ''}/${rb.roleRef?.name ?? ''}`,
+      subjects: rb.subjects?.length ?? 0,
+      age: formatAge(rb.metadata?.creationTimestamp)
+    }))
+  } catch (err) {
+    throw new Error(`获取RoleBinding失败: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+export const listClusterRoles = async (contextId: string): Promise<ClusterRoleInfo[]> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+  const api = createRbacV1Api(entry)
+  try {
+    const res = await api.listClusterRole()
+    const typedRes = res as { body?: { items?: V1ClusterRole[] }; items?: V1ClusterRole[] }
+    const items = typedRes.body?.items ?? typedRes.items ?? []
+    return items.map((cr) => ({
+      name: cr.metadata?.name ?? '',
+      rules: cr.rules?.length ?? 0,
+      age: formatAge(cr.metadata?.creationTimestamp)
+    }))
+  } catch (err) {
+    throw new Error(`获取ClusterRole失败: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+export const listClusterRoleBindings = async (contextId: string): Promise<ClusterRoleBindingInfo[]> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+  const api = createRbacV1Api(entry)
+  try {
+    const res = await api.listClusterRoleBinding()
+    const typedRes = res as { body?: { items?: V1ClusterRoleBinding[] }; items?: V1ClusterRoleBinding[] }
+    const items = typedRes.body?.items ?? typedRes.items ?? []
+    return items.map((crb) => ({
+      name: crb.metadata?.name ?? '',
+      roleRef: `${crb.roleRef?.kind ?? ''}/${crb.roleRef?.name ?? ''}`,
+      subjects: crb.subjects?.length ?? 0,
+      age: formatAge(crb.metadata?.creationTimestamp)
+    }))
+  } catch (err) {
+    throw new Error(`获取ClusterRoleBinding失败: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+export const listHPAs = async (contextId: string, namespace?: string): Promise<HPAInfo[]> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+  const api = createAutoscalingV2Api(entry)
+  try {
+    let res: unknown
+    if (namespace && namespace !== 'all') {
+      res = await api.listNamespacedHorizontalPodAutoscaler({ namespace })
+    } else {
+      res = await api.listHorizontalPodAutoscalerForAllNamespaces()
+    }
+    const typedRes = res as { body?: { items?: V2HorizontalPodAutoscaler[] }; items?: V2HorizontalPodAutoscaler[] }
+    const items = typedRes.body?.items ?? typedRes.items ?? []
+    return items.map((hpa) => {
+      const ref = hpa.spec?.scaleTargetRef
+      return {
+        name: hpa.metadata?.name ?? '',
+        namespace: hpa.metadata?.namespace ?? '',
+        reference: ref ? `${ref.kind}/${ref.name}` : '',
+        minPods: hpa.spec?.minReplicas ?? 1,
+        maxPods: hpa.spec?.maxReplicas ?? 0,
+        currentReplicas: hpa.status?.currentReplicas ?? 0,
+        desiredReplicas: hpa.status?.desiredReplicas ?? 0,
+        age: formatAge(hpa.metadata?.creationTimestamp)
+      }
+    })
+  } catch (err) {
+    throw new Error(`获取HorizontalPodAutoscaler失败: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+export const listEvents = async (contextId: string, namespace?: string): Promise<EventInfo[]> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+  const api = createCoreV1Api(entry)
+  try {
+    let res: unknown
+    if (namespace && namespace !== 'all') {
+      res = await api.listNamespacedEvent({ namespace })
+    } else {
+      res = await api.listEventForAllNamespaces()
+    }
+    const typedRes = res as { body?: { items?: CoreV1Event[] }; items?: CoreV1Event[] }
+    const items = typedRes.body?.items ?? typedRes.items ?? []
+    return items.map((ev) => {
+      const involvedObj = ev.involvedObject
+      return {
+        name: ev.metadata?.name ?? '',
+        namespace: ev.metadata?.namespace ?? '',
+        reason: ev.reason ?? '',
+        message: ev.message ?? '',
+        type: ev.type ?? 'Normal',
+        object: involvedObj ? `${involvedObj.kind}/${involvedObj.name}` : '',
+        count: ev.count ?? 1,
+        age: formatAge(ev.metadata?.creationTimestamp)
+      }
+    })
+  } catch (err) {
+    throw new Error(`获取Event失败: ${err instanceof Error ? err.message : String(err)}`)
   }
 }

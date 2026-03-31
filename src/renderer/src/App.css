@@ -664,6 +664,21 @@ body {
   text-align: center;
 }
 
+.row-warning {
+  background: rgba(234, 179, 8, 0.08);
+}
+
+.row-warning:hover {
+  background: rgba(234, 179, 8, 0.15);
+}
+
+.cell-truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 300px;
+}
+
 .status {
   font-weight: 600;
 }
