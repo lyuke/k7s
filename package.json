@@ -22,6 +22,7 @@
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
     "express": "^5.2.1",
+    "js-yaml": "^4.1.1",
     "node-pty": "^1.0.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -30,6 +31,7 @@
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^20.12.12",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",

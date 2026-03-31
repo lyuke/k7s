@@ -24,6 +24,7 @@ import {
 import { app } from 'electron'
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { load as yamlLoad } from 'js-yaml'
 import {
   AddContextsResult,
   ClusterHealth,
@@ -1512,16 +1513,17 @@ export const applyYaml = async (contextId: string, yaml: string): Promise<Create
     for (const doc of docs) {
       if (!doc.trim()) continue
 
-      const parsed = JSON.parse(doc)
-      const kind = parsed.kind
-      const apiVersion = parsed.apiVersion
-      const metadata = parsed.metadata || {}
+      const parsed = yamlLoad(doc) as Record<string, unknown>
+      if (!parsed || typeof parsed !== 'object') continue
+      const kind = parsed.kind as string | undefined
+      const apiVersion = parsed.apiVersion as string | undefined
+      const metadata = (parsed.metadata || {}) as Record<string, unknown>
 
       if (!kind || !apiVersion || !metadata.name) {
         continue
       }
 
-      const namespace = metadata.namespace || 'default'
+      const namespace = (metadata.namespace as string | undefined) || 'default'
 
       if (kind === 'Namespace') {
         const api = createCoreV1Api(entry)

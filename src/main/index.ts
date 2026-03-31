@@ -62,7 +62,6 @@ import {
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
-app.commandLine.appendSwitch('no-sandbox')
 const ensureWritableDir = (dir: string) => {
   fs.mkdirSync(dir, { recursive: true })
   const probePath = path.join(dir, '.probe')
@@ -306,6 +305,7 @@ ipcMain.handle('k7s:scale-replicaset', wrapHandler(async (_event: IpcMainInvokeE
 
 // Terminal state
 let terminalPty: pty.IStandalone | null = null
+let terminalLock: Promise<void> = Promise.resolve()
 
 // Track temp kubeconfig files for cleanup
 const tempKubeconfigFiles: string[] = []
@@ -325,72 +325,103 @@ const cleanupTempKubeconfig = (filePath: string) => {
 process.on('exit', () => {
   tempKubeconfigFiles.forEach(cleanupTempKubeconfig)
 })
+process.on('SIGTERM', () => {
+  tempKubeconfigFiles.forEach(cleanupTempKubeconfig)
+  process.exit(0)
+})
+process.on('SIGINT', () => {
+  tempKubeconfigFiles.forEach(cleanupTempKubeconfig)
+  process.exit(0)
+})
 
 ipcMain.handle('terminal:create', wrapHandler(async (_event, contextId: string) => {
-  if (terminalPty) {
-    terminalPty.kill()
-    terminalPty = null
-  }
+  let resolveLock!: () => void
+  const prevLock = terminalLock
+  terminalLock = new Promise<void>(resolve => { resolveLock = resolve })
+  await prevLock
 
-  const entry = getEntry(contextId)
-  entry.kubeConfig.setCurrentContext(entry.contextName)
-
-  // Use crypto.randomUUID() for secure temp file naming
-  const tempKubeconfig = path.join(os.tmpdir(), `k7s-${crypto.randomUUID()}.yaml`)
-  const kubeconfigContent = entry.kubeConfig.exportConfig()
-  await fsPromises.writeFile(tempKubeconfig, kubeconfigContent)
-
-  // Track for cleanup
-  tempKubeconfigFiles.push(tempKubeconfig)
-
-  const shell = process.platform === 'win32' ? 'powershell.exe' : (process.env.SHELL || 'zsh')
-  const cwd = os.homedir()
-
-  terminalPty = pty.spawn(shell, [], {
-    name: 'xterm-256color',
-    cols: 80,
-    rows: 24,
-    cwd,
-    env: {
-      ...process.env,
-      KUBECONFIG: tempKubeconfig
-    } as Record<string, string>
-  })
-
-  terminalPty.onData((data) => {
-    mainWindow?.webContents.send('terminal:data', data)
-  })
-
-  terminalPty.onExit(({ exitCode }) => {
-    mainWindow?.webContents.send('terminal:exit', exitCode)
-    terminalPty = null
-    // Clean up temp file
-    cleanupTempKubeconfig(tempKubeconfig)
-    const index = tempKubeconfigFiles.indexOf(tempKubeconfig)
-    if (index > -1) {
-      tempKubeconfigFiles.splice(index, 1)
+  try {
+    if (terminalPty) {
+      terminalPty.kill()
+      terminalPty = null
     }
-  })
 
-  return { shell, cwd }
+    const entry = getEntry(contextId)
+    entry.kubeConfig.setCurrentContext(entry.contextName)
+
+    // Use crypto.randomUUID() for secure temp file naming
+    const tempKubeconfig = path.join(os.tmpdir(), `k7s-${crypto.randomUUID()}.yaml`)
+    const kubeconfigContent = entry.kubeConfig.exportConfig()
+    await fsPromises.writeFile(tempKubeconfig, kubeconfigContent, { mode: 0o600 })
+
+    // Track for cleanup
+    tempKubeconfigFiles.push(tempKubeconfig)
+
+    const shellEnv = process.env.SHELL || ''
+    const shell = process.platform === 'win32'
+      ? 'powershell.exe'
+      : (/^[a-zA-Z0-9/_-]+$/.test(shellEnv) ? shellEnv : '/bin/sh')
+    const cwd = os.homedir()
+
+    terminalPty = pty.spawn(shell, [], {
+      name: 'xterm-256color',
+      cols: 80,
+      rows: 24,
+      cwd,
+      env: {
+        ...process.env,
+        KUBECONFIG: tempKubeconfig
+      } as Record<string, string>
+    })
+
+    terminalPty.onData((data) => {
+      mainWindow?.webContents.send('terminal:data', data)
+    })
+
+    terminalPty.onExit(({ exitCode }) => {
+      mainWindow?.webContents.send('terminal:exit', exitCode)
+      terminalPty = null
+      // Clean up temp file
+      cleanupTempKubeconfig(tempKubeconfig)
+      const index = tempKubeconfigFiles.indexOf(tempKubeconfig)
+      if (index > -1) {
+        tempKubeconfigFiles.splice(index, 1)
+      }
+    })
+
+    return { shell, cwd }
+  } finally {
+    resolveLock()
+  }
 }, 10000))
 
 ipcMain.handle('terminal:write', async (_event, data: string) => {
+  await terminalLock
   if (terminalPty) {
     terminalPty.write(data)
   }
 })
 
 ipcMain.handle('terminal:resize', async (_event, cols: number, rows: number) => {
+  await terminalLock
   if (terminalPty) {
     terminalPty.resize(cols, rows)
   }
 })
 
 ipcMain.handle('terminal:destroy', async () => {
-  if (terminalPty) {
-    terminalPty.kill()
-    terminalPty = null
+  let resolveLock!: () => void
+  const prevLock = terminalLock
+  terminalLock = new Promise<void>(resolve => { resolveLock = resolve })
+  await prevLock
+
+  try {
+    if (terminalPty) {
+      terminalPty.kill()
+      terminalPty = null
+    }
+  } finally {
+    resolveLock()
   }
 })
 

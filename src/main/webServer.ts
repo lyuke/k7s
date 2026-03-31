@@ -263,11 +263,36 @@ const handlers: Record<string, WsHandler> = {
   }
 }
 
+const WS_MAX_MESSAGE_BYTES = 1 * 1024 * 1024 // 1 MB
+const WS_RATE_LIMIT_WINDOW_MS = 1000
+const WS_RATE_LIMIT_MAX = 30 // max 30 messages per second per connection
+
 function setupWebSocket(wss: WebSocketServer) {
   wss.on('connection', (ws: WebSocket) => {
     clients.set(ws, true)
 
+    let messageCount = 0
+    let windowStart = Date.now()
+
     ws.on('message', async (message: Buffer) => {
+      // Message size guard
+      if (message.length > WS_MAX_MESSAGE_BYTES) {
+        ws.send(JSON.stringify({ id: 'error', error: 'Message too large' }))
+        return
+      }
+
+      // Rate limit guard
+      const now = Date.now()
+      if (now - windowStart > WS_RATE_LIMIT_WINDOW_MS) {
+        messageCount = 0
+        windowStart = now
+      }
+      messageCount++
+      if (messageCount > WS_RATE_LIMIT_MAX) {
+        ws.send(JSON.stringify({ id: 'error', error: 'Rate limit exceeded' }))
+        return
+      }
+
       try {
         const msg: WsMessage = JSON.parse(message.toString())
         const handler = handlers[msg.method]
@@ -303,11 +328,22 @@ function setupWebSocket(wss: WebSocketServer) {
 export function startWebServer(port: number = 3000): { server: ReturnType<typeof createServer>; wss: WebSocketServer } {
   const app = express()
 
-  // CORS headers for web mode
-  app.use((_req, res, next) => {
-    res.header('Access-Control-Allow-Origin', '*')
-    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
-    res.header('Access-Control-Allow-Headers', 'Content-Type')
+  // CORS: only allow same-origin and localhost (web mode is local-only)
+  const allowedOrigins = new Set([
+    `http://localhost:${port}`,
+    `http://127.0.0.1:${port}`
+  ])
+  app.use((req, res, next) => {
+    const origin = req.headers.origin
+    if (origin && allowedOrigins.has(origin)) {
+      res.header('Access-Control-Allow-Origin', origin)
+      res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+      res.header('Access-Control-Allow-Headers', 'Content-Type')
+    }
+    if (req.method === 'OPTIONS') {
+      res.sendStatus(204)
+      return
+    }
     next()
   })
 
