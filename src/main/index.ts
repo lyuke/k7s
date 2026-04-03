@@ -35,6 +35,7 @@ import {
   getEntry,
   getJobDetail,
   getNodeDetail,
+  getNodeMetrics,
   getPodDetail,
   getPodLogs,
   getReplicaSetDetail,
@@ -193,6 +194,10 @@ ipcMain.handle('k7s:list-nodes', wrapHandler(async (_event: IpcMainInvokeEvent, 
 
 ipcMain.handle('k7s:get-node-detail', wrapHandler(async (_event: IpcMainInvokeEvent, contextId: string, nodeName: string) => {
   return getNodeDetail(contextId, nodeName)
+}))
+
+ipcMain.handle('k7s:get-node-metrics', wrapHandler(async (_event: IpcMainInvokeEvent, contextId: string, nodeName: string) => {
+  return getNodeMetrics(contextId, nodeName)
 }))
 
 ipcMain.handle('k7s:get-pod-detail', wrapHandler(async (_event: IpcMainInvokeEvent, contextId: string, namespace: string, podName: string) => {

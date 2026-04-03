@@ -4,7 +4,7 @@ import { useClusterStore } from '../store'
 export const useKubernetes = () => {
   const contexts = useClusterStore((s) => s.contexts)
   const namespaces = useClusterStore((s) => s.namespaces)
-  const selectedNamespace = useClusterStore((s) => s.selectedNamespace)
+  const selectedNamespaces = useClusterStore((s) => s.selectedNamespaces)
   const selectedId = useClusterStore((s) => s.selectedId)
   const nodes = useClusterStore((s) => s.nodes)
   const pods = useClusterStore((s) => s.pods)
@@ -28,7 +28,7 @@ export const useKubernetes = () => {
   return {
     contexts,
     namespaces,
-    selectedNamespace,
+    selectedNamespaces,
     selectedId,
     nodes,
     pods,
@@ -44,7 +44,8 @@ export const useKubernetes = () => {
     lastRefreshTime,
     selectedContext,
     setSelectedId: useClusterStore((s) => s.selectContext),
-    setSelectedNamespace: useClusterStore((s) => s.selectNamespace),
+    toggleNamespace: useClusterStore((s) => s.toggleNamespace),
+    setSelectedNamespaces: useClusterStore((s) => s.setSelectedNamespaces),
     loadContexts,
     loadNamespaces,
     loadResources,

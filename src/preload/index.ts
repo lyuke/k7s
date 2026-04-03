@@ -20,6 +20,7 @@ import {
   JobInfo,
   NamespaceInfo,
   NodeInfo,
+  NodeMetrics,
   PersistentVolumeClaimInfo,
   PersistentVolumeInfo,
   PodInfo,
@@ -47,6 +48,8 @@ contextBridge.exposeInMainWorld('k7s', {
     ipcRenderer.invoke('k7s:list-nodes', contextId),
   getNodeDetail: (contextId: string, nodeName: string): Promise<NodeInfo> =>
     ipcRenderer.invoke('k7s:get-node-detail', contextId, nodeName),
+  getNodeMetrics: (contextId: string, nodeName: string): Promise<NodeMetrics | null> =>
+    ipcRenderer.invoke('k7s:get-node-metrics', contextId, nodeName),
   listPods: (contextId: string, namespace?: string): Promise<PodInfo[]> =>
     ipcRenderer.invoke('k7s:list-pods', contextId, namespace),
   getPodDetail: (contextId: string, namespace: string, podName: string): Promise<PodInfo> =>

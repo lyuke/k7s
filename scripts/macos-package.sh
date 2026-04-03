@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+
 ARCH="${ARCH:-}"
+ICON_SOURCE="${ICON_SOURCE:-}"
+
 if [ -z "$ARCH" ]; then
   UNAME_ARCH="$(uname -m)"
   if [ "$UNAME_ARCH" = "arm64" ]; then
@@ -11,18 +15,29 @@ if [ -z "$ARCH" ]; then
     ARCH="x64"
   fi
 fi
-if command -v npm >/dev/null 2>&1; then
+
+if ! command -v npm >/dev/null 2>&1; then
+  echo "npm 未找到"
+  exit 1
+fi
+
+if [ ! -d "node_modules" ]; then
   if [ -f "package-lock.json" ]; then
     npm ci
   else
     npm install
   fi
-else
-  echo "npm 未找到"
-  exit 1
 fi
+
+if [ -n "$ICON_SOURCE" ]; then
+  bash scripts/generate-mac-icon.sh "$ICON_SOURCE"
+else
+  bash scripts/generate-mac-icon.sh
+fi
+
 npm run build
 npx electron-builder --mac --$ARCH
+
 DMG_FILE="$(ls -t release/*.dmg 2>/dev/null | head -n1 || true)"
 if [ -n "$DMG_FILE" ]; then
   echo "DMG 生成成功: $DMG_FILE"

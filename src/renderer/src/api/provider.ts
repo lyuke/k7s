@@ -22,6 +22,7 @@ import {
   JobInfo,
   NamespaceInfo,
   NodeInfo,
+  NodeMetrics,
   PersistentVolumeClaimInfo,
   PersistentVolumeInfo,
   PodInfo,
@@ -54,6 +55,7 @@ interface WebSocketApi {
   listNamespaces: (contextId: string) => Promise<NamespaceInfo[]>
   listNodes: (contextId: string) => Promise<NodeInfo[]>
   getNodeDetail: (contextId: string, nodeName: string) => Promise<NodeInfo>
+  getNodeMetrics: (contextId: string, nodeName: string) => Promise<NodeMetrics | null>
   listPods: (contextId: string, namespace?: string) => Promise<PodInfo[]>
   getPodDetail: (contextId: string, namespace: string, podName: string) => Promise<PodInfo>
   listDeployments: (contextId: string, namespace?: string) => Promise<DeploymentInfo[]>
@@ -132,6 +134,11 @@ export const k8sApi: WebSocketApi = {
   getNodeDetail: async (contextId: string, nodeName: string) => {
     if (electronApi) return electronApi.getNodeDetail(contextId, nodeName)
     return wsClient.getNodeDetail(contextId, nodeName) as Promise<NodeInfo>
+  },
+
+  getNodeMetrics: async (contextId: string, nodeName: string) => {
+    if (electronApi) return electronApi.getNodeMetrics(contextId, nodeName)
+    return wsClient.getNodeMetrics(contextId, nodeName) as Promise<NodeMetrics | null>
   },
 
   listPods: async (contextId: string, namespace?: string) => {

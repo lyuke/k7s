@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { k8sApi } from '../../api/provider'
 import {
   DeploymentForm,
@@ -23,7 +23,8 @@ interface CreateResourceModalProps {
   isOpen: boolean
   onClose: () => void
   contextId: string
-  namespace: string
+  selectedNamespaces: string[]
+  availableNamespaces: string[]
   onSuccess: () => void
 }
 
@@ -31,12 +32,39 @@ export const CreateResourceModal: React.FC<CreateResourceModalProps> = ({
   isOpen,
   onClose,
   contextId,
-  namespace,
+  selectedNamespaces,
+  availableNamespaces,
   onSuccess
 }) => {
   const [resourceKind, setResourceKind] = useState<ResourceKind | ''>('')
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const namespaceOptions = useMemo(() => {
+    if (availableNamespaces.length > 0) return availableNamespaces
+    return ['default']
+  }, [availableNamespaces])
+  const [targetNamespace, setTargetNamespace] = useState(() => {
+    if (selectedNamespaces.length === 1) return selectedNamespaces[0]
+    if (namespaceOptions.includes('default')) return 'default'
+    return namespaceOptions[0] ?? ''
+  })
+
+  useEffect(() => {
+    if (!isOpen) return
+    setResourceKind('')
+    setError(null)
+    if (selectedNamespaces.length === 1) {
+      setTargetNamespace(selectedNamespaces[0])
+      return
+    }
+    if (namespaceOptions.includes('default')) {
+      setTargetNamespace('default')
+      return
+    }
+    setTargetNamespace(namespaceOptions[0] ?? '')
+  }, [isOpen, namespaceOptions, selectedNamespaces])
+
+  const isNamespacedResource = resourceKind !== '' && resourceKind !== 'Namespace'
 
   if (!isOpen) return null
 
@@ -161,7 +189,7 @@ export const CreateResourceModal: React.FC<CreateResourceModalProps> = ({
       case 'Deployment':
         return (
           <DeploymentForm
-            namespace={namespace === 'all' ? 'default' : namespace}
+            namespace={targetNamespace}
             onSubmit={handleDeploymentSubmit}
             onCancel={onClose}
             isLoading={isLoading}
@@ -170,7 +198,7 @@ export const CreateResourceModal: React.FC<CreateResourceModalProps> = ({
       case 'Service':
         return (
           <ServiceForm
-            namespace={namespace === 'all' ? 'default' : namespace}
+            namespace={targetNamespace}
             onSubmit={handleServiceSubmit}
             onCancel={onClose}
             isLoading={isLoading}
@@ -179,7 +207,7 @@ export const CreateResourceModal: React.FC<CreateResourceModalProps> = ({
       case 'ConfigMap':
         return (
           <ConfigMapForm
-            namespace={namespace === 'all' ? 'default' : namespace}
+            namespace={targetNamespace}
             onSubmit={handleConfigMapSubmit}
             onCancel={onClose}
             isLoading={isLoading}
@@ -188,7 +216,7 @@ export const CreateResourceModal: React.FC<CreateResourceModalProps> = ({
       case 'Secret':
         return (
           <SecretForm
-            namespace={namespace === 'all' ? 'default' : namespace}
+            namespace={targetNamespace}
             onSubmit={handleSecretSubmit}
             onCancel={onClose}
             isLoading={isLoading}
@@ -197,7 +225,7 @@ export const CreateResourceModal: React.FC<CreateResourceModalProps> = ({
       case 'Ingress':
         return (
           <IngressForm
-            namespace={namespace === 'all' ? 'default' : namespace}
+            namespace={targetNamespace}
             onSubmit={handleIngressSubmit}
             onCancel={onClose}
             isLoading={isLoading}
@@ -239,6 +267,22 @@ export const CreateResourceModal: React.FC<CreateResourceModalProps> = ({
               <span>Creating: {resourceKind}</span>
             </div>
             {error && <div className="error-message">{error}</div>}
+            {isNamespacedResource && (
+              <div className="form-group">
+                <label>Namespace</label>
+                <select
+                  value={targetNamespace}
+                  onChange={(e) => setTargetNamespace(e.target.value)}
+                  disabled={isLoading}
+                >
+                  {namespaceOptions.map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
             {renderForm()}
           </>
         )}

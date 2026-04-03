@@ -9,10 +9,32 @@
     "start": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "dist:mac": "npm run build && npx electron-builder --mac",
-    "dist:mac:arm64": "npm run build && npx electron-builder --mac --arm64",
-    "dist:mac:x64": "npm run build && npx electron-builder --mac --x64",
+    "icon:mac": "bash scripts/generate-mac-icon.sh",
+    "dist:mac": "bash scripts/macos-package.sh",
+    "dist:mac:arm64": "ARCH=arm64 bash scripts/macos-package.sh",
+    "dist:mac:x64": "ARCH=x64 bash scripts/macos-package.sh",
     "install:mac": "bash scripts/macos-install.sh"
+  },
+  "build": {
+    "appId": "com.k7s.desktop",
+    "productName": "k7s",
+    "asar": true,
+    "directories": {
+      "output": "release",
+      "buildResources": "resources"
+    },
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "icon": "resources/icon.icns",
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "dmg": {
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    }
   },
   "bin": {
     "k7s": "bin/k7s.js"

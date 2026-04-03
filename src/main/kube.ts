@@ -60,6 +60,7 @@ import {
   NamespaceInfo,
   NodeCapacity,
   NodeInfo,
+  NodeMetrics,
   PersistentVolumeClaimInfo,
   PersistentVolumeInfo,
   PodContainer,
@@ -79,6 +80,8 @@ import {
   ContextPrefs,
   ContextGroup
 } from '../shared/types'
+import { request as httpsRequest, Agent } from 'node:https'
+import { request as httpRequest } from 'node:http'
 
 type ContextEntry = {
   id: string
@@ -528,6 +531,106 @@ export const getNodeDetail = async (contextId: string, nodeName: string): Promis
   }
 }
 
+export const getNodeMetrics = async (contextId: string, nodeName: string): Promise<NodeMetrics | null> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+  setupKubeConfig(entry)
+
+  const currentCluster = entry.kubeConfig.getCurrentCluster()
+  if (!currentCluster) {
+    return null
+  }
+
+  const cluster = entry.kubeConfig.clusters.find(c => c.name === currentCluster.name)
+  if (!cluster) {
+    return null
+  }
+
+  const user = entry.kubeConfig.getCurrentUser()
+  if (!user) {
+    return null
+  }
+
+  const isHTTPS = currentCluster.server.startsWith('https://')
+  const requestModule = isHTTPS ? httpsRequest : httpRequest
+
+  const url = new URL(currentCluster.server)
+  const path = `/apis/metrics.k8s.io/v1beta1/nodes/${nodeName}`
+
+  const options: {
+    hostname: string
+    port?: number
+    path: string
+    method: string
+    headers: Record<string, string>
+    agent?: Agent
+  } = {
+    hostname: url.hostname,
+    port: url.port || (isHTTPS ? 443 : 80),
+    path,
+    method: 'GET',
+    headers: {
+      'Accept': 'application/json'
+    }
+  }
+
+  // Add auth header
+  if (user.token) {
+    options.headers['Authorization'] = `Bearer ${user.token}`
+  }
+
+  // Add client certs for HTTPS
+  if (isHTTPS && cluster.caData) {
+    options.agent = new Agent({
+      ca: Buffer.from(cluster.caData, 'base64')
+    })
+  }
+
+  // Add client certificate authentication
+  if (user.certData && user.keyData) {
+    const agent = options.agent as Agent | undefined
+    if (agent) {
+      (agent as Agent & { key?: Buffer; cert?: Buffer }).key = Buffer.from(user.keyData, 'base64')
+      ;(agent as Agent & { key?: Buffer; cert?: Buffer }).cert = Buffer.from(user.certData, 'base64')
+    }
+  }
+
+  return new Promise((resolve) => {
+    const req = requestModule(options, (res) => {
+      let data = ''
+      res.on('data', (chunk) => data += chunk)
+      res.on('end', () => {
+        if (res.statusCode !== 200) {
+          resolve(null)
+          return
+        }
+        try {
+          const parsed = JSON.parse(data)
+          const node = parsed.items?.[0]
+          if (!node) {
+            resolve(null)
+            return
+          }
+          resolve({
+            name: node.name,
+            timestamp: node.timestamp || '',
+            cpu: node.usage?.cpu || '0',
+            memory: node.usage?.memory || '0'
+          })
+        } catch {
+          resolve(null)
+        }
+      })
+    })
+    req.on('error', () => resolve(null))
+    req.setTimeout(5000, () => {
+      req.destroy()
+      resolve(null)
+    })
+    req.end()
+  })
+}
+
 export const listPods = async (contextId: string, namespace?: string): Promise<PodInfo[]> => {
   await ensureCache()
   const entry = getEntry(contextId)
@@ -712,9 +815,15 @@ export const listCronJobs = async (contextId: string, namespace?: string): Promi
 
 const extractResponse = <T>(res: unknown): T | undefined => {
   const typed = res as { body?: T; response?: T } | T
+  if (typed === undefined || typed === null) {
+    return undefined
+  }
+  if (typeof typed !== 'object') {
+    return typed as T
+  }
+  if ('body' in typed && typed.body !== undefined) return typed.body
+  if ('response' in typed && typed.response !== undefined) return typed.response
   if (typed && typeof typed === 'object') {
-    if ('body' in typed && typed.body) return typed.body
-    if ('response' in typed && typed.response) return typed.response
     if ('metadata' in typed) return typed as T
   }
   return undefined

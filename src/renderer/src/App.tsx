@@ -84,7 +84,7 @@ const App = () => {
   const contexts = useClusterStore((s) => s.contexts)
   const selectedId = useClusterStore((s) => s.selectedId)
   const namespaces = useClusterStore((s) => s.namespaces)
-  const selectedNamespace = useClusterStore((s) => s.selectedNamespace)
+  const selectedNamespaces = useClusterStore((s) => s.selectedNamespaces)
   const nodes = useClusterStore((s) => s.nodes)
   const pods = useClusterStore((s) => s.pods)
   const deployments = useClusterStore((s) => s.deployments)
@@ -116,7 +116,7 @@ const App = () => {
   const loadContexts = useClusterStore((s) => s.loadContexts)
   const selectContext = useClusterStore((s) => s.selectContext)
   const loadNamespaces = useClusterStore((s) => s.loadNamespaces)
-  const selectNamespace = useClusterStore((s) => s.selectNamespace)
+  const setSelectedNamespaces = useClusterStore((s) => s.setSelectedNamespaces)
   const loadResources = useClusterStore((s) => s.loadResources)
   const loadClusterHealth = useClusterStore((s) => s.loadClusterHealth)
   const loadNewResources = useClusterStore((s) => s.loadNewResources)
@@ -129,13 +129,11 @@ const App = () => {
   const sortDirection = useUIStore((s) => s.sortDirection)
   const refreshInterval = useUIStore((s) => s.refreshInterval)
   const selectedResourceType = useUIStore((s) => s.selectedResourceType)
-  const nsSearchText = useUIStore((s) => s.nsSearchText)
   const setSearchText = useUIStore((s) => s.setSearchText)
   const setSortField = useUIStore((s) => s.setSortField)
   const setSortDirection = useUIStore((s) => s.setSortDirection)
   const setRefreshInterval = useUIStore((s) => s.setRefreshInterval)
   const setSelectedResourceType = useUIStore((s) => s.setSelectedResourceType)
-  const setNsSearchText = useUIStore((s) => s.setNsSearchText)
   const sortData = useUIStore((s) => s.sortData)
   const filterData = useUIStore((s) => s.filterData)
   const handleSort = useUIStore((s) => s.handleSort)
@@ -143,8 +141,11 @@ const App = () => {
   // Detail modal states
   const selectedNode = useUIStore((s) => s.selectedNode)
   const nodeDetailLoading = useUIStore((s) => s.nodeDetailLoading)
+  const nodeMetrics = useUIStore((s) => s.nodeMetrics)
+  const nodeMetricsLoading = useUIStore((s) => s.nodeMetricsLoading)
   const selectedPod = useUIStore((s) => s.selectedPod)
   const podDetailLoading = useUIStore((s) => s.podDetailLoading)
+  const podDetailError = useUIStore((s) => s.podDetailError)
   const selectedPodForLogs = useUIStore((s) => s.selectedPodForLogs)
   const selectedDeployment = useUIStore((s) => s.selectedDeployment)
   const deploymentDetailLoading = useUIStore((s) => s.deploymentDetailLoading)
@@ -225,11 +226,20 @@ const App = () => {
     return m
   }, [contexts])
 
-  const filteredNamespaces = useMemo(() => {
-    const q = nsSearchText.trim().toLowerCase()
-    if (!q) return namespaces
-    return namespaces.filter((ns) => ns.name.toLowerCase().includes(q))
-  }, [namespaces, nsSearchText])
+  const selectedNamespace = selectedNamespaces[0] ?? ''
+
+  const filterNamespacedData = <T extends { namespace: string }>(data: T[]) => {
+    if (!selectedNamespace) return data
+    return data.filter((item) => item.namespace === selectedNamespace)
+  }
+
+  const getVisibleData = <T extends { name?: string; namespace?: string }>(data: T[]) => (
+    sortData(filterData(data))
+  )
+
+  const getVisibleNamespacedData = <T extends { name?: string; namespace: string }>(data: T[]) => (
+    getVisibleData(filterNamespacedData(data))
+  )
 
   // Load context preferences on mount
   useEffect(() => {
@@ -241,7 +251,7 @@ const App = () => {
     loadContexts()
   }, [loadContexts])
 
-  // Load namespaces and resources when selected context or namespace changes
+  // Load namespaces and resources when selected context changes
   useEffect(() => {
     if (selectedId) {
       loadNamespaces()
@@ -249,7 +259,7 @@ const App = () => {
       loadClusterHealth()
       loadNewResources()
     }
-  }, [selectedId, selectedNamespace, loadNamespaces, loadResources, loadClusterHealth, loadNewResources])
+  }, [selectedId, loadNamespaces, loadResources, loadClusterHealth, loadNewResources])
 
   // Refresh timer effect
   useEffect(() => {
@@ -273,7 +283,7 @@ const App = () => {
         refreshTimerRef.current = null
       }
     }
-  }, [selectedId, selectedNamespace, refreshInterval, loadResources])
+  }, [selectedId, refreshInterval, loadResources])
 
   // Handle add with loading state
   const handleAddClick = async () => {
@@ -296,8 +306,7 @@ const App = () => {
 
     switch (selectedResourceType) {
       case 'nodes':
-        const filteredNodes = filterData(nodes)
-        const sortedNodes = sortData(filteredNodes)
+        const sortedNodes = getVisibleData(nodes)
         return (
           <div className="table">
             <div className="table-row table-head">
@@ -321,8 +330,7 @@ const App = () => {
         )
 
       case 'pods':
-        const filteredPods = filterData(pods)
-        const sortedPods = sortData(filteredPods)
+        const sortedPods = getVisibleNamespacedData(pods)
         return (
           <div className="table">
             <div className="table-row table-head">
@@ -334,7 +342,7 @@ const App = () => {
               <div onClick={handleHeaderClick('age')}>存活 <SortIcon direction={sortField === 'age' ? sortDirection : undefined} /></div>
             </div>
             {sortedPods.map((pod) => (
-              <div className="table-row clickable" key={`${pod.namespace}-${pod.name}`} onClick={() => handlePodClick(pod.namespace, pod.name, selectedId)}>
+              <div className="table-row clickable" key={`${pod.namespace}-${pod.name}`} onClick={() => handlePodClick(pod, selectedId)}>
                 <div>{pod.name}</div>
                 <div>{pod.namespace}</div>
                 <div className={`status ${pod.status === 'Running' ? 'ok' : 'warn'}`}>{pod.status}</div>
@@ -360,8 +368,7 @@ const App = () => {
         )
 
       case 'deployments':
-        const filteredDeployments = filterData(deployments)
-        const sortedDeployments = sortData(filteredDeployments)
+        const sortedDeployments = getVisibleNamespacedData(deployments)
         return (
           <div className="table">
             <div className="table-row table-head">
@@ -387,8 +394,7 @@ const App = () => {
         )
 
       case 'daemonsets':
-        const filteredDaemonSets = filterData(daemonSets)
-        const sortedDaemonSets = sortData(filteredDaemonSets)
+        const sortedDaemonSets = getVisibleNamespacedData(daemonSets)
         return (
           <div className="table">
             <div className="table-row table-head">
@@ -414,8 +420,7 @@ const App = () => {
         )
 
       case 'statefulsets':
-        const filteredStatefulSets = filterData(statefulSets)
-        const sortedStatefulSets = sortData(filteredStatefulSets)
+        const sortedStatefulSets = getVisibleNamespacedData(statefulSets)
         return (
           <div className="table">
             <div className="table-row table-head">
@@ -439,8 +444,7 @@ const App = () => {
         )
 
       case 'replicasets':
-        const filteredReplicaSets = filterData(replicaSets)
-        const sortedReplicaSets = sortData(filteredReplicaSets)
+        const sortedReplicaSets = getVisibleNamespacedData(replicaSets)
         return (
           <div className="table">
             <div className="table-row table-head">
@@ -464,8 +468,7 @@ const App = () => {
         )
 
       case 'jobs':
-        const filteredJobs = filterData(jobs)
-        const sortedJobs = sortData(filteredJobs)
+        const sortedJobs = getVisibleNamespacedData(jobs)
         return (
           <div className="table">
             <div className="table-row table-head">
@@ -491,8 +494,7 @@ const App = () => {
         )
 
       case 'cronjobs':
-        const filteredCronJobs = filterData(cronJobs)
-        const sortedCronJobs = sortData(filteredCronJobs)
+        const sortedCronJobs = getVisibleNamespacedData(cronJobs)
         return (
           <div className="table">
             <div className="table-row table-head">
@@ -520,8 +522,7 @@ const App = () => {
         )
 
       case 'services':
-        const filteredServices = filterData(services)
-        const sortedServices = sortData(filteredServices)
+        const sortedServices = getVisibleNamespacedData(services)
         return (
           <div className="table">
             <div className="table-row table-head">
@@ -559,8 +560,7 @@ const App = () => {
         )
 
       case 'configmaps':
-        const filteredConfigMaps = filterData(configMaps)
-        const sortedConfigMaps = sortData(filteredConfigMaps)
+        const sortedConfigMaps = getVisibleNamespacedData(configMaps)
         return (
           <div className="table">
             <div className="table-row table-head">
@@ -592,8 +592,7 @@ const App = () => {
         )
 
       case 'secrets':
-        const filteredSecrets = filterData(secrets)
-        const sortedSecrets = sortData(filteredSecrets)
+        const sortedSecrets = getVisibleNamespacedData(secrets)
         return (
           <div className="table">
             <div className="table-row table-head">
@@ -627,8 +626,7 @@ const App = () => {
         )
 
       case 'ingresses':
-        const filteredIngresses = filterData(ingresses)
-        const sortedIngresses = sortData(filteredIngresses)
+        const sortedIngresses = getVisibleNamespacedData(ingresses)
         return (
           <div className="table">
             <div className="table-row table-head">
@@ -664,8 +662,7 @@ const App = () => {
         )
 
       case 'persistentvolumes':
-        const filteredPVs = filterData(persistentVolumes)
-        const sortedPVs = sortData(filteredPVs)
+        const sortedPVs = getVisibleData(persistentVolumes)
         return (
           <div className="table">
             <div className="table-row table-head">
@@ -693,8 +690,7 @@ const App = () => {
         )
 
       case 'persistentvolumeclaims':
-        const filteredPVCs = filterData(persistentVolumeClaims)
-        const sortedPVCs = sortData(filteredPVCs)
+        const sortedPVCs = getVisibleNamespacedData(persistentVolumeClaims)
         return (
           <div className="table">
             <div className="table-row table-head">
@@ -722,8 +718,7 @@ const App = () => {
         )
 
       case 'storageclasses':
-        const filteredSCs = filterData(storageClasses)
-        const sortedSCs = sortData(filteredSCs)
+        const sortedSCs = getVisibleData(storageClasses)
         return (
           <div className="table">
             <div className="table-row table-head">
@@ -747,8 +742,7 @@ const App = () => {
         )
 
       case 'serviceaccounts':
-        const filteredSAs = filterData(serviceAccounts)
-        const sortedSAs = sortData(filteredSAs)
+        const sortedSAs = getVisibleNamespacedData(serviceAccounts)
         return (
           <div className="table">
             <div className="table-row table-head">
@@ -770,8 +764,7 @@ const App = () => {
         )
 
       case 'roles':
-        const filteredRoles = filterData(roles)
-        const sortedRoles = sortData(filteredRoles)
+        const sortedRoles = getVisibleNamespacedData(roles)
         return (
           <div className="table">
             <div className="table-row table-head">
@@ -793,8 +786,7 @@ const App = () => {
         )
 
       case 'rolebindings':
-        const filteredRBs = filterData(roleBindings)
-        const sortedRBs = sortData(filteredRBs)
+        const sortedRBs = getVisibleNamespacedData(roleBindings)
         return (
           <div className="table">
             <div className="table-row table-head">
@@ -818,8 +810,7 @@ const App = () => {
         )
 
       case 'clusterroles':
-        const filteredCRs = filterData(clusterRoles)
-        const sortedCRs = sortData(filteredCRs)
+        const sortedCRs = getVisibleData(clusterRoles)
         return (
           <div className="table">
             <div className="table-row table-head">
@@ -839,8 +830,7 @@ const App = () => {
         )
 
       case 'clusterrolebindings':
-        const filteredCRBs = filterData(clusterRoleBindings)
-        const sortedCRBs = sortData(filteredCRBs)
+        const sortedCRBs = getVisibleData(clusterRoleBindings)
         return (
           <div className="table">
             <div className="table-row table-head">
@@ -862,8 +852,7 @@ const App = () => {
         )
 
       case 'horizontalpodautoscalers':
-        const filteredHPAs = filterData(hpas)
-        const sortedHPAs = sortData(filteredHPAs)
+        const sortedHPAs = getVisibleNamespacedData(hpas)
         return (
           <div className="table">
             <div className="table-row table-head">
@@ -893,8 +882,7 @@ const App = () => {
         )
 
       case 'events':
-        const filteredEvents = filterData(events)
-        const sortedEvents = sortData(filteredEvents)
+        const sortedEvents = getVisibleNamespacedData(events)
         return (
           <div className="table">
             <div className="table-row table-head">
@@ -1135,30 +1123,25 @@ const App = () => {
                       <select
                         className="namespace-select"
                         value={selectedNamespace}
-                        onChange={(e) => selectNamespace(e.target.value)}
+                        onChange={(e) => setSelectedNamespaces(e.target.value ? [e.target.value] : [])}
                       >
-                        <option value="all">全部命名空间</option>
-                        {filteredNamespaces.map((ns) => (
-                          <option key={ns.name} value={ns.name}>{ns.name}</option>
+                        <option value="">全部命名空间</option>
+                        {namespaces.map((ns) => (
+                          <option key={ns.name} value={ns.name}>
+                            {ns.name}
+                          </option>
                         ))}
                       </select>
-                      {namespaces.length > 10 && (
+                    </div>
+                    <div className="search-input-wrap">
                         <input
                           type="text"
-                          className="ns-search-input"
-                          placeholder="筛选命名空间..."
-                          value={nsSearchText}
-                          onChange={(e) => setNsSearchText(e.target.value)}
+                          className="search-input"
+                          placeholder="搜索资源名称或 namespace..."
+                          value={searchText}
+                          onChange={(e) => setSearchText(e.target.value)}
                         />
-                      )}
                     </div>
-                    <input
-                      type="text"
-                      className="search-input"
-                      placeholder="搜索..."
-                      value={searchText}
-                      onChange={(e) => setSearchText(e.target.value)}
-                    />
                   </div>
                   <div className="create-controls">
                     <button
@@ -1207,11 +1190,20 @@ const App = () => {
       <NodeDetailModal
         node={selectedNode}
         loading={nodeDetailLoading}
+        metrics={nodeMetrics}
+        metricsLoading={nodeMetricsLoading}
+        pods={selectedNode ? pods.filter(p => p.nodeName === selectedNode.name) : []}
+        events={selectedNode ? events.filter((event) => event.object === `Node/${selectedNode.name}`) : []}
         onClose={handleCloseNodeDetail}
       />
       <PodDetailModal
         pod={selectedPod}
         loading={podDetailLoading}
+        error={podDetailError}
+        onViewLogs={(pod) => {
+          handleClosePodDetail()
+          handleOpenPodLogs(pod)
+        }}
         onClose={handleClosePodDetail}
       />
       <LogViewerModal
@@ -1566,8 +1558,10 @@ const App = () => {
         isOpen={isCreateModalOpen}
         onClose={() => setIsCreateModalOpen(false)}
         contextId={selectedId}
-        namespace={selectedNamespace}
+        selectedNamespaces={selectedNamespaces}
+        availableNamespaces={namespaces.map((ns) => ns.name)}
         onSuccess={() => {
+          loadNamespaces()
           loadResources()
           loadNewResources()
         }}

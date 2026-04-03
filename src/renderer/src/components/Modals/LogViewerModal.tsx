@@ -9,29 +9,76 @@ interface LogViewerModalProps {
 }
 
 export const LogViewerModal = ({ pod, contextId, onClose }: LogViewerModalProps) => {
+  const [resolvedPod, setResolvedPod] = useState<PodInfo | null>(null)
+  const [resolvingPod, setResolvingPod] = useState(false)
   const [logs, setLogs] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [podContextError, setPodContextError] = useState<string | null>(null)
   const [containerName, setContainerName] = useState('')
   const [autoScroll, setAutoScroll] = useState(true)
   const [tailLines, setTailLines] = useState(100)
   const logsEndRef = useRef<HTMLDivElement>(null)
   const logsContainerRef = useRef<HTMLPreElement>(null)
+  const requestIdRef = useRef(0)
+  const displayPod = resolvedPod ?? pod
+  const containers = displayPod?.containers || []
+  const resolvedContainerName = containers.some((c) => c.name === containerName)
+    ? containerName
+    : (containers[0]?.name ?? '')
 
   useEffect(() => {
-    if (pod) {
-      // Set default container
-      if (pod.containers && pod.containers.length > 0 && !containerName) {
-        setContainerName(pod.containers[0].name)
-      }
+    let cancelled = false
+
+    if (!pod) {
+      setResolvedPod(null)
+      setResolvingPod(false)
+      setContainerName('')
+      setLogs('')
+      setError(null)
+      setPodContextError(null)
+      return
     }
-  }, [pod])
+
+    setResolvedPod(null)
+    setResolvingPod(true)
+    setError(null)
+    setPodContextError(null)
+
+    k8sApi.getPodDetail(contextId, pod.namespace, pod.name)
+      .then((detail) => {
+        if (!cancelled) {
+          setResolvedPod(detail)
+        }
+      })
+      .catch((err) => {
+        console.error('获取 Pod 日志上下文失败:', err)
+        if (!cancelled) {
+          setPodContextError(err instanceof Error ? err.message : '获取 Pod 详情失败')
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setResolvingPod(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [pod, contextId])
 
   useEffect(() => {
-    if (pod && contextId) {
-      fetchLogs()
+    if (resolvedContainerName !== containerName) {
+      setContainerName(resolvedContainerName)
     }
-  }, [pod, contextId, containerName, tailLines])
+  }, [containerName, resolvedContainerName])
+
+  useEffect(() => {
+    if (displayPod && contextId && !resolvingPod) {
+      fetchLogs(resolvedContainerName)
+    }
+  }, [displayPod, contextId, resolvedContainerName, tailLines, resolvingPod])
 
   useEffect(() => {
     if (autoScroll && logsEndRef.current) {
@@ -39,24 +86,31 @@ export const LogViewerModal = ({ pod, contextId, onClose }: LogViewerModalProps)
     }
   }, [logs, autoScroll])
 
-  const fetchLogs = async () => {
-    if (!pod) return
+  const fetchLogs = async (targetContainerName = resolvedContainerName) => {
+    if (!displayPod) return
+    const requestId = ++requestIdRef.current
     setLoading(true)
     setError(null)
     try {
       const logContent = await k8sApi.getPodLogs(
         contextId,
-        pod.namespace,
-        pod.name,
-        containerName || undefined,
+        displayPod.namespace,
+        displayPod.name,
+        targetContainerName || undefined,
         tailLines
       )
-      setLogs(logContent)
+      if (requestId === requestIdRef.current) {
+        setLogs(logContent)
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : '获取日志失败')
-      setLogs('')
+      if (requestId === requestIdRef.current) {
+        setError(err instanceof Error ? err.message : '获取日志失败')
+        setLogs('')
+      }
     } finally {
-      setLoading(false)
+      if (requestId === requestIdRef.current) {
+        setLoading(false)
+      }
     }
   }
 
@@ -76,16 +130,15 @@ export const LogViewerModal = ({ pod, contextId, onClose }: LogViewerModalProps)
     }
   }
 
-  if (!pod) return null
+  if (!displayPod) return null
 
-  const containers = pod.containers || []
   const showContainerSelect = containers.length > 1
 
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content log-viewer-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
-          <h2>Pod 日志 - {pod.name}</h2>
+          <h2>Pod 日志 - {displayPod.name}</h2>
           <button className="modal-close" onClick={onClose}>x</button>
         </div>
         <div className="log-viewer-toolbar">
@@ -94,7 +147,7 @@ export const LogViewerModal = ({ pod, contextId, onClose }: LogViewerModalProps)
               <div className="log-viewer-select">
                 <label>容器:</label>
                 <select
-                  value={containerName}
+                  value={resolvedContainerName}
                   onChange={(e) => setContainerName(e.target.value)}
                 >
                   {containers.map((c) => (
@@ -135,8 +188,10 @@ export const LogViewerModal = ({ pod, contextId, onClose }: LogViewerModalProps)
           </div>
         </div>
         <div className="log-viewer-body">
-          {loading ? (
+          {loading || resolvingPod ? (
             <div className="log-viewer-loading">加载中...</div>
+          ) : podContextError ? (
+            <div className="log-viewer-error">{podContextError}</div>
           ) : error ? (
             <div className="log-viewer-error">{error}</div>
           ) : (
@@ -152,8 +207,8 @@ export const LogViewerModal = ({ pod, contextId, onClose }: LogViewerModalProps)
         </div>
         <div className="log-viewer-footer">
           <span className="log-viewer-info">
-            {containerName && `容器: ${containerName}`}
-            {containerName && ' | '}
+            {resolvedContainerName && `容器: ${resolvedContainerName}`}
+            {resolvedContainerName && ' | '}
             显示最近 {tailLines} 行
           </span>
         </div>

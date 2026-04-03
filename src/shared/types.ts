@@ -57,6 +57,13 @@ export type NodeCapacity = {
   ephemeralStorage?: string
 }
 
+export type NodeMetrics = {
+  name: string
+  timestamp: string
+  cpu: string
+  memory: string
+}
+
 export type NodeInfo = {
   name: string
   status: string

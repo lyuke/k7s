@@ -32,6 +32,7 @@ import {
   getEntry,
   getJobDetail,
   getNodeDetail,
+  getNodeMetrics,
   getPodDetail,
   getPodLogs,
   getReplicaSetDetail,
@@ -100,6 +101,10 @@ const handlers: Record<string, WsHandler> = {
   'k7s:get-node-detail': async (data, respond) => {
     const { contextId, nodeName } = data as { contextId: string; nodeName: string }
     respond(await getNodeDetail(contextId, nodeName))
+  },
+  'k7s:get-node-metrics': async (data, respond) => {
+    const { contextId, nodeName } = data as { contextId: string; nodeName: string }
+    respond(await getNodeMetrics(contextId, nodeName))
   },
   'k7s:get-pod-detail': async (data, respond) => {
     const { contextId, namespace, podName } = data as { contextId: string; namespace: string; podName: string }

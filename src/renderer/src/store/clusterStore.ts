@@ -35,7 +35,7 @@ interface ClusterState {
   contexts: ContextRecord[]
   selectedId: string
   namespaces: NamespaceInfo[]
-  selectedNamespace: string
+  selectedNamespaces: string[]
   nodes: NodeInfo[]
   pods: PodInfo[]
   deployments: DeploymentInfo[]
@@ -71,7 +71,8 @@ interface ClusterState {
   loadContexts: () => Promise<void>
   selectContext: (id: string) => void
   loadNamespaces: () => Promise<void>
-  selectNamespace: (ns: string) => void
+  toggleNamespace: (ns: string) => void
+  setSelectedNamespaces: (namespaces: string[]) => void
   loadResources: (isAutoRefresh?: boolean) => Promise<void>
   loadClusterHealth: () => Promise<void>
   loadNewResources: () => Promise<void>
@@ -85,7 +86,7 @@ export const useClusterStore = create<ClusterState>((set, get) => ({
   contexts: [],
   selectedId: '',
   namespaces: [],
-  selectedNamespace: 'all',
+  selectedNamespaces: [],
   nodes: [],
   pods: [],
   deployments: [],
@@ -131,7 +132,7 @@ export const useClusterStore = create<ClusterState>((set, get) => ({
       }
       const stillExists = list.some((item) => item.id === selectedId)
       if (!selectedId || !stillExists) {
-        set({ selectedId: list[0].id })
+        set({ selectedId: list[0].id, selectedNamespaces: [] })
       }
     } catch (err) {
       set({ error: err instanceof Error ? err.message : '加载集群列表失败' })
@@ -139,7 +140,7 @@ export const useClusterStore = create<ClusterState>((set, get) => ({
   },
 
   selectContext: (id: string) => {
-    set({ selectedId: id })
+    set({ selectedId: id, selectedNamespaces: [] })
   },
 
   loadNamespaces: async () => {
@@ -147,18 +148,28 @@ export const useClusterStore = create<ClusterState>((set, get) => ({
     if (!selectedId) return
     try {
       const list = await k8sApi.listNamespaces(selectedId)
-      set({ namespaces: list })
+      const available = new Set(list.map((item) => item.name))
+      const selectedNamespaces = get().selectedNamespaces.filter((name) => available.has(name))
+      set({ namespaces: list, selectedNamespaces })
     } catch {
       set({ namespaces: [] })
     }
   },
 
-  selectNamespace: (ns: string) => {
-    set({ selectedNamespace: ns })
+  toggleNamespace: (ns: string) => {
+    const { selectedNamespaces } = get()
+    const next = selectedNamespaces.includes(ns)
+      ? selectedNamespaces.filter((name) => name !== ns)
+      : [...selectedNamespaces, ns]
+    set({ selectedNamespaces: next })
+  },
+
+  setSelectedNamespaces: (namespaces) => {
+    set({ selectedNamespaces: namespaces })
   },
 
   loadResources: async (isAutoRefresh = false) => {
-    const { selectedId, selectedNamespace } = get()
+    const { selectedId } = get()
     if (!selectedId) return
 
     if (isAutoRefresh) {
@@ -169,16 +180,15 @@ export const useClusterStore = create<ClusterState>((set, get) => ({
     set({ error: '' })
 
     try {
-      const ns = selectedNamespace === 'all' ? undefined : selectedNamespace
       const [nodeList, podList, deployList, dsList, stsList, rsList, jobList, cjList] = await Promise.all([
         k8sApi.listNodes(selectedId),
-        k8sApi.listPods(selectedId, ns),
-        k8sApi.listDeployments(selectedId, ns),
-        k8sApi.listDaemonSets(selectedId, ns),
-        k8sApi.listStatefulSets(selectedId, ns),
-        k8sApi.listReplicaSets(selectedId, ns),
-        k8sApi.listJobs(selectedId, ns),
-        k8sApi.listCronJobs(selectedId, ns)
+        k8sApi.listPods(selectedId),
+        k8sApi.listDeployments(selectedId),
+        k8sApi.listDaemonSets(selectedId),
+        k8sApi.listStatefulSets(selectedId),
+        k8sApi.listReplicaSets(selectedId),
+        k8sApi.listJobs(selectedId),
+        k8sApi.listCronJobs(selectedId)
       ])
       set({
         nodes: nodeList,
@@ -211,11 +221,10 @@ export const useClusterStore = create<ClusterState>((set, get) => ({
   },
 
   loadNewResources: async () => {
-    const { selectedId, selectedNamespace } = get()
+    const { selectedId } = get()
     if (!selectedId) return
 
     try {
-      const ns = selectedNamespace === 'all' ? undefined : selectedNamespace
       const [
         serviceList,
         configMapList,
@@ -232,20 +241,20 @@ export const useClusterStore = create<ClusterState>((set, get) => ({
         hpaList,
         eventList
       ] = await Promise.all([
-        k8sApi.listServices(selectedId, ns),
-        k8sApi.listConfigMaps(selectedId, ns),
-        k8sApi.listSecrets(selectedId, ns),
-        k8sApi.listIngresses(selectedId, ns),
+        k8sApi.listServices(selectedId),
+        k8sApi.listConfigMaps(selectedId),
+        k8sApi.listSecrets(selectedId),
+        k8sApi.listIngresses(selectedId),
         k8sApi.listPersistentVolumes(selectedId),
-        k8sApi.listPersistentVolumeClaims(selectedId, ns),
+        k8sApi.listPersistentVolumeClaims(selectedId),
         k8sApi.listStorageClasses(selectedId),
-        k8sApi.listServiceAccounts(selectedId, ns),
-        k8sApi.listRoles(selectedId, ns),
-        k8sApi.listRoleBindings(selectedId, ns),
+        k8sApi.listServiceAccounts(selectedId),
+        k8sApi.listRoles(selectedId),
+        k8sApi.listRoleBindings(selectedId),
         k8sApi.listClusterRoles(selectedId),
         k8sApi.listClusterRoleBindings(selectedId),
-        k8sApi.listHPAs(selectedId, ns),
-        k8sApi.listEvents(selectedId, ns)
+        k8sApi.listHPAs(selectedId),
+        k8sApi.listEvents(selectedId)
       ])
       set({
         services: serviceList,
@@ -275,9 +284,9 @@ export const useClusterStore = create<ClusterState>((set, get) => ({
       const result = await k8sApi.addKubeconfigFile()
       set({ contexts: result.contexts })
       if (result.addedIds.length > 0) {
-        set({ selectedId: result.addedIds[0] })
+        set({ selectedId: result.addedIds[0], selectedNamespaces: [] })
       } else if (!selectedId && result.contexts.length > 0) {
-        set({ selectedId: result.contexts[0].id })
+        set({ selectedId: result.contexts[0].id, selectedNamespaces: [] })
       }
     } catch (err) {
       set({ error: err instanceof Error ? err.message : '添加配置失败' })
@@ -285,7 +294,7 @@ export const useClusterStore = create<ClusterState>((set, get) => ({
   },
 
   handleManualRefresh: () => {
-    const { selectedId, selectedNamespace, loadResources } = get()
+    const { selectedId, loadResources } = get()
     if (selectedId) {
       loadResources(true)
     }

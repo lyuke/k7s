@@ -3,10 +3,12 @@ import { PodInfo } from '../../../../shared/types'
 interface PodDetailModalProps {
   pod: PodInfo | null
   loading: boolean
+  error: string | null
+  onViewLogs: (pod: PodInfo) => void
   onClose: () => void
 }
 
-export const PodDetailModal = ({ pod, loading, onClose }: PodDetailModalProps) => {
+export const PodDetailModal = ({ pod, loading, error, onViewLogs, onClose }: PodDetailModalProps) => {
   if (!pod && !loading) return null
 
   return (
@@ -20,8 +22,22 @@ export const PodDetailModal = ({ pod, loading, onClose }: PodDetailModalProps) =
           <div className="modal-loading">加载中...</div>
         ) : pod && (
           <div className="modal-body">
+            {error && (
+              <div className="detail-error">
+                {error}
+              </div>
+            )}
             <div className="detail-section">
-              <div className="detail-section-title">基本信息</div>
+              <div className="detail-section-header">
+                <div className="detail-section-title">基本信息</div>
+                <button
+                  className="action-btn logs-btn"
+                  onClick={() => onViewLogs(pod)}
+                  title="查看 Pod 日志"
+                >
+                  查看日志
+                </button>
+              </div>
               <div className="detail-grid">
                 <div className="detail-item">
                   <span className="detail-label">名称</span>

@@ -1,12 +1,16 @@
-import { NodeInfo } from '../../../../shared/types'
+import { EventInfo, NodeInfo, NodeMetrics, PodInfo } from '../../../../shared/types'
 
 interface NodeDetailModalProps {
   node: NodeInfo | null
   loading: boolean
+  metrics: NodeMetrics | null
+  metricsLoading: boolean
+  pods: PodInfo[]
+  events: EventInfo[]
   onClose: () => void
 }
 
-export const NodeDetailModal = ({ node, loading, onClose }: NodeDetailModalProps) => {
+export const NodeDetailModal = ({ node, loading, metrics, metricsLoading, pods, events, onClose }: NodeDetailModalProps) => {
   if (!node && !loading) return null
 
   const getInternalIP = () => {
@@ -17,9 +21,45 @@ export const NodeDetailModal = ({ node, loading, onClose }: NodeDetailModalProps
     return node?.addresses?.find(a => a.type === 'ExternalIP')?.address ?? '-'
   }
 
+  const formatCPU = (cpu: string) => {
+    if (!cpu) return '-'
+    // CPU is usually in nanocores, convert to cores
+    if (cpu.endsWith('n')) {
+      const cores = parseInt(cpu) / 1000000000
+      return cores.toFixed(2) + ' cores'
+    }
+    if (cpu.endsWith('m')) {
+      return cpu + ' (millicores)'
+    }
+    return cpu
+  }
+
+  const formatMemory = (memory: string) => {
+    if (!memory) return '-'
+    // Memory is usually in bytes, convert to Mi or Gi
+    const bytes = parseInt(memory)
+    if (bytes < 1024 * 1024) {
+      return (bytes / 1024).toFixed(2) + ' Ki'
+    }
+    if (bytes < 1024 * 1024 * 1024) {
+      return (bytes / (1024 * 1024)).toFixed(2) + ' Mi'
+    }
+    return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' Gi'
+  }
+
+  const abnormalConditions = node?.conditions?.filter((cond) => {
+    if (cond.type === 'Ready') return cond.status !== 'True'
+    if (['MemoryPressure', 'DiskPressure', 'PIDPressure', 'NetworkUnavailable'].includes(cond.type)) {
+      return cond.status !== 'False'
+    }
+    return cond.status === 'Unknown'
+  }) ?? []
+
+  const warningEvents = events.filter((event) => event.type === 'Warning')
+
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+      <div className="modal-content node-detail-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h2>节点详情</h2>
           <button className="modal-close" onClick={onClose}>×</button>
@@ -56,6 +96,43 @@ export const NodeDetailModal = ({ node, loading, onClose }: NodeDetailModalProps
                   <span className="detail-value">{node.unschedulable ? '是' : '否'}</span>
                 </div>
               </div>
+            </div>
+
+            <div className="detail-section">
+              <div className="detail-section-title">报错信息</div>
+              {abnormalConditions.length === 0 && warningEvents.length === 0 ? (
+                <div className="detail-item">
+                  <span className="detail-value">当前未发现该节点相关报错</span>
+                </div>
+              ) : (
+                <div className="issue-list">
+                  {abnormalConditions.map((cond, idx) => (
+                    <div key={`${cond.type}-${idx}`} className="issue-item">
+                      <div className="issue-item-header">
+                        <span className="issue-item-kind">Condition</span>
+                        <span className="issue-item-title">{cond.type}</span>
+                        <span className="issue-item-badge">{cond.status}</span>
+                      </div>
+                      <div className="issue-item-message">{cond.message || cond.reason || '节点条件异常'}</div>
+                      <div className="issue-item-meta">
+                        原因: {cond.reason ?? '-'}
+                        {cond.lastTransitionTime ? ` | 变更时间: ${new Date(cond.lastTransitionTime).toLocaleString()}` : ''}
+                      </div>
+                    </div>
+                  ))}
+                  {warningEvents.map((event) => (
+                    <div key={`${event.namespace}-${event.name}`} className="issue-item">
+                      <div className="issue-item-header">
+                        <span className="issue-item-kind">Event</span>
+                        <span className="issue-item-title">{event.reason || 'Warning'}</span>
+                        <span className="issue-item-badge">x{event.count}</span>
+                      </div>
+                      <div className="issue-item-message">{event.message || '无详细信息'}</div>
+                      <div className="issue-item-meta">对象: {event.object || '-'} | 时间: {event.age}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div className="detail-section">
@@ -122,6 +199,63 @@ export const NodeDetailModal = ({ node, loading, onClose }: NodeDetailModalProps
                   <span className="detail-value">{node.capacity?.ephemeralStorage ?? '-'}</span>
                 </div>
               </div>
+            </div>
+
+            <div className="detail-section">
+              <div className="detail-section-title">监控信息</div>
+              {metricsLoading ? (
+                <div className="modal-loading">加载监控数据...</div>
+              ) : metrics ? (
+                <div className="detail-grid">
+                  <div className="detail-item">
+                    <span className="detail-label">CPU 使用</span>
+                    <span className="detail-value">{formatCPU(metrics.cpu)}</span>
+                  </div>
+                  <div className="detail-item">
+                    <span className="detail-label">内存使用</span>
+                    <span className="detail-value">{formatMemory(metrics.memory)}</span>
+                  </div>
+                  <div className="detail-item">
+                    <span className="detail-label">采集时间</span>
+                    <span className="detail-value">{metrics.timestamp ? new Date(metrics.timestamp).toLocaleString() : '-'}</span>
+                  </div>
+                </div>
+              ) : (
+                <div className="detail-grid">
+                  <div className="detail-item">
+                    <span className="detail-label">状态</span>
+                    <span className="detail-value warn">无法获取监控数据（需要部署 metrics-server）</span>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="detail-section">
+              <div className="detail-section-title">Pods ({pods.length})</div>
+              {pods.length > 0 ? (
+                <div className="pods-table">
+                  <div className="conditions-row conditions-head">
+                    <div>名称</div>
+                    <div>命名空间</div>
+                    <div>状态</div>
+                    <div>重启</div>
+                    <div>存活时间</div>
+                  </div>
+                  {pods.map((pod) => (
+                    <div key={`${pod.namespace}-${pod.name}`} className="conditions-row">
+                      <div className="detail-value-truncate" style={{maxWidth: '150px'}}>{pod.name}</div>
+                      <div>{pod.namespace}</div>
+                      <div className={`status ${pod.status === 'Running' ? 'ok' : 'warn'}`}>{pod.status}</div>
+                      <div>{pod.restarts}</div>
+                      <div>{pod.age}</div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="detail-item">
+                  <span className="detail-value">该节点上没有运行的 Pod</span>
+                </div>
+              )}
             </div>
 
             {node.taints && node.taints.length > 0 && (

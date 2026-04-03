@@ -16,10 +16,13 @@ interface UIState {
   // Node modal
   selectedNode: import('../../../shared/types').NodeInfo | null
   nodeDetailLoading: boolean
+  nodeMetrics: import('../../../shared/types').NodeMetrics | null
+  nodeMetricsLoading: boolean
 
   // Pod modal
   selectedPod: import('../../../shared/types').PodInfo | null
   podDetailLoading: boolean
+  podDetailError: string | null
 
   // Pod log viewer modal
   selectedPodForLogs: import('../../../shared/types').PodInfo | null
@@ -69,8 +72,11 @@ interface UIState {
   setNsSearchText: (text: string) => void
   setSelectedNode: (node: import('../../../shared/types').NodeInfo | null) => void
   setNodeDetailLoading: (loading: boolean) => void
+  setNodeMetrics: (metrics: import('../../../shared/types').NodeMetrics | null) => void
+  setNodeMetricsLoading: (loading: boolean) => void
   setSelectedPod: (pod: import('../../../shared/types').PodInfo | null) => void
   setPodDetailLoading: (loading: boolean) => void
+  setPodDetailError: (error: string | null) => void
   setSelectedPodForLogs: (pod: import('../../../shared/types').PodInfo | null) => void
   setSelectedDeployment: (deploy: import('../../../shared/types').DeploymentInfo | null) => void
   setDeploymentDetailLoading: (loading: boolean) => void
@@ -95,8 +101,10 @@ interface UIState {
   // Detail handlers
   handleNodeClick: (nodeName: string, contextId: string) => Promise<void>
   handleCloseNodeDetail: () => void
-  handlePodClick: (namespace: string, podName: string, contextId: string) => Promise<void>
+  handlePodClick: (pod: import('../../../shared/types').PodInfo, contextId: string) => Promise<void>
   handleClosePodDetail: () => void
+  handleOpenPodLogs: (pod: import('../../../shared/types').PodInfo) => void
+  handleClosePodLogs: () => void
   handleDeploymentClick: (namespace: string, name: string, contextId: string) => Promise<void>
   handleCloseDeploymentDetail: () => void
   handleDaemonSetClick: (namespace: string, name: string, contextId: string) => Promise<void>
@@ -121,8 +129,11 @@ export const useUIStore = create<UIState>((set, get) => ({
   nsSearchText: '',
   selectedNode: null,
   nodeDetailLoading: false,
+  nodeMetrics: null,
+  nodeMetricsLoading: false,
   selectedPod: null,
   podDetailLoading: false,
+  podDetailError: null,
   selectedPodForLogs: null,
   selectedDeployment: null,
   deploymentDetailLoading: false,
@@ -150,8 +161,11 @@ export const useUIStore = create<UIState>((set, get) => ({
   setNsSearchText: (text) => set({ nsSearchText: text }),
   setSelectedNode: (node) => set({ selectedNode: node }),
   setNodeDetailLoading: (loading) => set({ nodeDetailLoading: loading }),
+  setNodeMetrics: (metrics) => set({ nodeMetrics: metrics }),
+  setNodeMetricsLoading: (loading) => set({ nodeMetricsLoading: loading }),
   setSelectedPod: (pod) => set({ selectedPod: pod }),
   setPodDetailLoading: (loading) => set({ podDetailLoading: loading }),
+  setPodDetailError: (error) => set({ podDetailError: error }),
   setSelectedPodForLogs: (pod) => set({ selectedPodForLogs: pod }),
   setSelectedDeployment: (deploy) => set({ selectedDeployment: deploy }),
   setDeploymentDetailLoading: (loading) => set({ deploymentDetailLoading: loading }),
@@ -213,37 +227,44 @@ export const useUIStore = create<UIState>((set, get) => ({
   // Node handlers
   handleNodeClick: async (nodeName, contextId) => {
     if (!contextId) return
-    set({ nodeDetailLoading: true, selectedNode: null })
+    set({ nodeDetailLoading: true, nodeMetricsLoading: true, selectedNode: null, nodeMetrics: null })
     try {
-      const detail = await k8sApi.getNodeDetail(contextId, nodeName)
-      set({ selectedNode: detail })
+      const [detail, metrics] = await Promise.all([
+        k8sApi.getNodeDetail(contextId, nodeName),
+        k8sApi.getNodeMetrics(contextId, nodeName)
+      ])
+      set({ selectedNode: detail, nodeMetrics: metrics })
     } catch (err) {
       console.error('获取节点详情失败:', err)
     } finally {
-      set({ nodeDetailLoading: false })
+      set({ nodeDetailLoading: false, nodeMetricsLoading: false })
     }
   },
 
   handleCloseNodeDetail: () => {
-    set({ selectedNode: null, nodeDetailLoading: false })
+    set({ selectedNode: null, nodeDetailLoading: false, nodeMetrics: null, nodeMetricsLoading: false })
   },
 
   // Pod handlers
-  handlePodClick: async (namespace, podName, contextId) => {
+  handlePodClick: async (pod, contextId) => {
     if (!contextId) return
-    set({ podDetailLoading: true, selectedPod: null })
+    set({ podDetailLoading: true, podDetailError: null, selectedPod: pod })
     try {
-      const detail = await k8sApi.getPodDetail(contextId, namespace, podName)
-      set({ selectedPod: detail })
+      const detail = await k8sApi.getPodDetail(contextId, pod.namespace, pod.name)
+      set({ selectedPod: detail, podDetailError: null })
     } catch (err) {
       console.error('获取Pod详情失败:', err)
+      set({
+        selectedPod: pod,
+        podDetailError: err instanceof Error ? err.message : '获取Pod详情失败'
+      })
     } finally {
       set({ podDetailLoading: false })
     }
   },
 
   handleClosePodDetail: () => {
-    set({ selectedPod: null, podDetailLoading: false })
+    set({ selectedPod: null, podDetailLoading: false, podDetailError: null })
   },
 
   handleOpenPodLogs: (pod: import('../../../shared/types').PodInfo) => {
