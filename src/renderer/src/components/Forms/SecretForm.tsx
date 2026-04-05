@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { SecretFormData } from '../../../../shared/types'
+import type { SecretFormData } from '../../../../shared/types'
 import { KeyValueEditor } from './common/KeyValueEditor'
 
 interface SecretFormProps {

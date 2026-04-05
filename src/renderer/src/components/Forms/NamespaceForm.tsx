@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { NamespaceFormData } from '../../../../shared/types'
+import type { NamespaceFormData } from '../../../../shared/types'
 
 interface NamespaceFormProps {
   onSubmit: (data: NamespaceFormData) => void

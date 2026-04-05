@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { ConfigMapFormData } from '../../../../shared/types'
+import type { ConfigMapFormData } from '../../../../shared/types'
 import { KeyValueEditor } from './common/KeyValueEditor'
 
 interface ConfigMapFormProps {

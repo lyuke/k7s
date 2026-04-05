@@ -1,5 +1,5 @@
 import React from 'react'
-import { DeploymentInfo, DaemonSetInfo, StatefulSetInfo, ReplicaSetInfo, JobInfo, CronJobInfo } from '../../../../shared/types'
+import type { DeploymentInfo, DaemonSetInfo, StatefulSetInfo, ReplicaSetInfo, JobInfo, CronJobInfo } from '../../../../shared/types'
 
 interface GenericDetailModalProps<T> {
   resource: T | null

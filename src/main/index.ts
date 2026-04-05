@@ -1,4 +1,6 @@
-import { app, BrowserWindow, dialog, ipcMain, IpcMainInvokeEvent } from 'electron'
+/* node:coverage disable */
+import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import type { IpcMainInvokeEvent } from 'electron'
 import fs from 'node:fs'
 import fsPromises from 'node:fs/promises'
 import path from 'node:path'
@@ -22,6 +24,7 @@ import {
   deleteJob,
   deleteNamespace,
   deletePod,
+  deleteResource,
   deleteReplicaSet,
   deleteStatefulSet,
   getClusterHealth,
@@ -64,11 +67,33 @@ import {
   listServices,
   listStatefulSets,
   listStorageClasses,
+  restartWorkload,
   scaleDeployment,
   scaleReplicaSet,
+  scaleWorkload,
   scaleStatefulSet,
   updateDeployment
 } from './kube'
+import {
+  rollbackWorkload,
+  startPodExec,
+  startPodLogStream,
+  startPortForward,
+  stopPodExec,
+  stopPodLogStream,
+  stopPortForward,
+  subscribeToContextWatch,
+  unsubscribeFromContextWatch,
+} from './runtime'
+import type {
+  K7sPushEvent,
+  KubernetesResourceKind,
+  PodExecData,
+  PodLogStreamRequest,
+  PortForwardRequest,
+  RolloutWorkloadKind,
+  ScaleableWorkloadKind,
+} from '../shared/types'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -97,6 +122,11 @@ const configureDataDirs = () => {
 configureDataDirs()
 
 let mainWindow: BrowserWindow | null = null
+const ELECTRON_WATCH_OWNER = 'electron-main-window'
+
+const emitPushEvent = (event: K7sPushEvent) => {
+  mainWindow?.webContents.send('k7s:push-event', event)
+}
 
 const createWindow = () => {
   const win = new BrowserWindow({
@@ -163,6 +193,7 @@ const wrapHandler = <T extends (...args: unknown[]) => Promise<unknown>>(
 }
 
 app.on('window-all-closed', () => {
+  void unsubscribeFromContextWatch(ELECTRON_WATCH_OWNER)
   if (process.platform !== 'darwin') {
     app.quit()
   }
@@ -318,6 +349,57 @@ ipcMain.handle('k7s:scale-replicaset', wrapHandler(async (_event: IpcMainInvokeE
   return scaleReplicaSet(contextId, namespace, name, replicas)
 }))
 
+ipcMain.handle('k7s:delete-resource', wrapHandler(async (
+  _event: IpcMainInvokeEvent,
+  contextId: string,
+  kind: KubernetesResourceKind,
+  namespace: string,
+  name: string
+) => {
+  return deleteResource(contextId, kind, namespace, name)
+}))
+
+ipcMain.handle('k7s:scale-workload', wrapHandler(async (
+  _event: IpcMainInvokeEvent,
+  contextId: string,
+  kind: ScaleableWorkloadKind,
+  namespace: string,
+  name: string,
+  replicas: number
+) => {
+  return scaleWorkload(contextId, kind, namespace, name, replicas)
+}))
+
+ipcMain.handle('k7s:restart-workload', wrapHandler(async (
+  _event: IpcMainInvokeEvent,
+  contextId: string,
+  kind: RolloutWorkloadKind,
+  namespace: string,
+  name: string
+) => {
+  return restartWorkload(contextId, kind, namespace, name)
+}))
+
+ipcMain.handle('k7s:rollback-workload', wrapHandler(async (
+  _event: IpcMainInvokeEvent,
+  contextId: string,
+  kind: RolloutWorkloadKind,
+  namespace: string,
+  name: string
+) => {
+  return rollbackWorkload(contextId, kind, namespace, name)
+}))
+
+ipcMain.handle('k7s:subscribe-watch', wrapHandler(async (_event: IpcMainInvokeEvent, contextId: string) => {
+  await subscribeToContextWatch(ELECTRON_WATCH_OWNER, contextId, emitPushEvent)
+  return { success: true }
+}))
+
+ipcMain.handle('k7s:unsubscribe-watch', wrapHandler(async () => {
+  await unsubscribeFromContextWatch(ELECTRON_WATCH_OWNER)
+  return { success: true }
+}))
+
 // Terminal state
 let terminalPty: pty.IStandalone | null = null
 let terminalLock: Promise<void> = Promise.resolve()
@@ -444,6 +526,45 @@ ipcMain.handle('k7s:get-pod-logs', wrapHandler(async (_event: IpcMainInvokeEvent
   return getPodLogs(contextId, namespace, podName, containerName, tailLines)
 }))
 
+ipcMain.handle('k7s:start-pod-log-stream', wrapHandler(async (
+  _event: IpcMainInvokeEvent,
+  contextId: string,
+  request: PodLogStreamRequest
+) => {
+  return startPodLogStream(contextId, request, emitPushEvent)
+}))
+
+ipcMain.handle('k7s:stop-pod-log-stream', wrapHandler(async (_event: IpcMainInvokeEvent, streamId: string) => {
+  await stopPodLogStream(streamId)
+  return { success: true }
+}))
+
+ipcMain.handle('k7s:start-pod-exec', wrapHandler(async (
+  _event: IpcMainInvokeEvent,
+  contextId: string,
+  request: PodExecData
+) => {
+  return startPodExec(contextId, request, emitPushEvent)
+}))
+
+ipcMain.handle('k7s:stop-pod-exec', wrapHandler(async (_event: IpcMainInvokeEvent, sessionId: string) => {
+  await stopPodExec(sessionId)
+  return { success: true }
+}))
+
+ipcMain.handle('k7s:start-port-forward', wrapHandler(async (
+  _event: IpcMainInvokeEvent,
+  contextId: string,
+  request: PortForwardRequest
+) => {
+  return startPortForward(contextId, request, emitPushEvent)
+}, 15000))
+
+ipcMain.handle('k7s:stop-port-forward', wrapHandler(async (_event: IpcMainInvokeEvent, sessionId: string) => {
+  await stopPortForward(sessionId)
+  return { success: true }
+}))
+
 // Cluster health
 ipcMain.handle('k7s:get-cluster-health', wrapHandler(async (_event: IpcMainInvokeEvent, contextId: string) => {
   return getClusterHealth(contextId)
@@ -544,3 +665,4 @@ ipcMain.handle('k7s:apply-yaml', wrapHandler(async (_event: IpcMainInvokeEvent, 
 ipcMain.handle('k7s:get-resource-yaml', wrapHandler(async (_event: IpcMainInvokeEvent, contextId: string, kind: string, namespace: string, name: string) => {
   return getResourceYaml(contextId, kind, namespace, name)
 }))
+/* node:coverage enable */

@@ -1,4 +1,4 @@
-import { DeploymentInfo } from '../../../../shared/types'
+import type { DeploymentInfo } from '../../../../shared/types'
 
 interface DeploymentDetailModalProps {
   deploy: DeploymentInfo | null

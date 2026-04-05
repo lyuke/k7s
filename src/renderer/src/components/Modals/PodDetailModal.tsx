@@ -1,4 +1,4 @@
-import { PodInfo } from '../../../../shared/types'
+import type { PodInfo } from '../../../../shared/types'
 
 interface PodDetailModalProps {
   pod: PodInfo | null

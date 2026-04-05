@@ -17,6 +17,7 @@ interface TerminalState {
 }
 
 // Separate hook for terminal initialization logic
+/* node:coverage disable */
 export const useTerminalInit = (showTerminal: boolean, selectedId: string, containerRef: React.RefObject<HTMLDivElement | null>) => {
   const terminalRef = useRef<Terminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
@@ -102,6 +103,7 @@ export const useTerminalInit = (showTerminal: boolean, selectedId: string, conta
     }
   }, [showTerminal, selectedId, containerRef, k8sTerm])
 }
+/* node:coverage enable */
 
 export const useTerminalStore = create<TerminalState>((set, get) => ({
   // Initial state

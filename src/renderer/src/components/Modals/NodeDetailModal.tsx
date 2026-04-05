@@ -1,4 +1,4 @@
-import { EventInfo, NodeInfo, NodeMetrics, PodInfo } from '../../../../shared/types'
+import type { EventInfo, NodeInfo, NodeMetrics, PodInfo } from '../../../../shared/types'
 
 interface NodeDetailModalProps {
   node: NodeInfo | null

@@ -339,6 +339,108 @@ export type ScaleResult = {
   message?: string
 }
 
+export type KubernetesResourceKind =
+  | 'Namespace'
+  | 'Node'
+  | 'Pod'
+  | 'Deployment'
+  | 'DaemonSet'
+  | 'StatefulSet'
+  | 'ReplicaSet'
+  | 'Job'
+  | 'CronJob'
+  | 'Service'
+  | 'ConfigMap'
+  | 'Secret'
+  | 'Ingress'
+  | 'PersistentVolume'
+  | 'PersistentVolumeClaim'
+  | 'StorageClass'
+  | 'ServiceAccount'
+  | 'Role'
+  | 'RoleBinding'
+  | 'ClusterRole'
+  | 'ClusterRoleBinding'
+  | 'HorizontalPodAutoscaler'
+  | 'Event'
+
+export type ScaleableWorkloadKind = 'Deployment' | 'StatefulSet' | 'ReplicaSet'
+
+export type RolloutWorkloadKind = 'Deployment' | 'DaemonSet' | 'StatefulSet'
+
+export type RolloutResult = {
+  success: boolean
+  message?: string
+}
+
+export type PodLogStreamRequest = {
+  namespace: string
+  podName: string
+  containerName?: string
+  tailLines?: number
+}
+
+export type PodLogStreamResult = {
+  streamId: string
+}
+
+export type PodExecResult = {
+  sessionId: string
+}
+
+export type PortForwardRequest = {
+  namespace: string
+  podName: string
+  targetPort: number
+  localPort?: number
+}
+
+export type PortForwardResult = {
+  sessionId: string
+  localPort: number
+  message?: string
+}
+
+export type K7sPushEvent =
+  | {
+      type: 'watch'
+      contextId: string
+      resource: string
+      phase: string
+    }
+  | {
+      type: 'log:chunk'
+      streamId: string
+      chunk: string
+    }
+  | {
+      type: 'log:end'
+      streamId: string
+      error?: string
+    }
+  | {
+      type: 'exec:chunk'
+      sessionId: string
+      stream: 'stdout' | 'stderr'
+      chunk: string
+    }
+  | {
+      type: 'exec:end'
+      sessionId: string
+      message?: string
+      error?: string
+    }
+  | {
+      type: 'port-forward'
+      sessionId: string
+      state: 'running' | 'stopped' | 'error'
+      namespace: string
+      podName: string
+      localPort: number
+      targetPort: number
+      message?: string
+    }
+
 export type AddContextsResult = {
   contexts: ContextRecord[]
   addedIds: string[]

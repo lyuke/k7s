@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { ContextRecord, ContextGroup, ContextPrefs } from '../../../shared/types'
+import type { ContextRecord, ContextGroup, ContextPrefs } from '../../../shared/types'
 import { k8sApi } from '../api/provider'
 
 interface PreferencesState {

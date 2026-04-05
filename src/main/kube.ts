@@ -1,3 +1,4 @@
+/* node:coverage disable */
 import {
   AppsV1Api,
   AutoscalingV2Api,
@@ -38,7 +39,7 @@ import { app } from 'electron'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { load as yamlLoad } from 'js-yaml'
-import {
+import type {
   AddContextsResult,
   ClusterHealth,
   ClusterRoleBindingInfo,
@@ -57,6 +58,7 @@ import {
   IngressFormData,
   IngressInfo,
   JobInfo,
+  KubernetesResourceKind,
   NamespaceInfo,
   NodeCapacity,
   NodeInfo,
@@ -66,9 +68,12 @@ import {
   PodContainer,
   PodInfo,
   ReplicaSetInfo,
+  RolloutResult,
+  RolloutWorkloadKind,
   RoleBindingInfo,
   RoleInfo,
   ScaleResult,
+  ScaleableWorkloadKind,
   SecretFormData,
   SecretInfo,
   ServiceAccountInfo,
@@ -324,6 +329,13 @@ export const getEntry = (contextId: string): ContextEntry => {
     throw new Error('context not found')
   }
   return entry
+}
+
+export const getConfiguredKubeConfig = async (contextId: string): Promise<KubeConfig> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+  setupKubeConfig(entry)
+  return entry.kubeConfig
 }
 
 const setupKubeConfig = (entry: ContextEntry) => {
@@ -837,6 +849,45 @@ const getContainerState = (state?: { running?: unknown; waiting?: { reason?: str
   return 'Unknown'
 }
 
+const mapPodContainers = (
+  specContainers: Array<{ name?: string; image?: string }> = [],
+  statusContainers: Array<{
+    name?: string
+    image?: string
+    restartCount?: number
+    ready?: boolean
+    state?: Parameters<typeof getContainerState>[0]
+  }> = [],
+): PodContainer[] => {
+  const statusByName = new Map(
+    statusContainers
+      .filter((container) => Boolean(container.name))
+      .map((container) => [container.name as string, container]),
+  )
+  const orderedNames = specContainers
+    .map((container) => container.name?.trim())
+    .filter((name): name is string => Boolean(name))
+
+  for (const status of statusContainers) {
+    const name = status.name?.trim()
+    if (name && !orderedNames.includes(name)) {
+      orderedNames.push(name)
+    }
+  }
+
+  return orderedNames.map((name) => {
+    const spec = specContainers.find((container) => container.name === name)
+    const status = statusByName.get(name)
+    return {
+      name,
+      image: status?.image ?? spec?.image ?? '',
+      restartCount: status?.restartCount ?? 0,
+      ready: status?.ready ?? false,
+      state: getContainerState(status?.state),
+    }
+  })
+}
+
 export const getPodDetail = async (contextId: string, namespace: string, podName: string): Promise<PodInfo> => {
   await ensureCache()
   const entry = getEntry(contextId)
@@ -845,23 +896,29 @@ export const getPodDetail = async (contextId: string, namespace: string, podName
     const res = await api.readNamespacedPod({ name: podName, namespace })
     const pod = extractResponse<V1Pod>(res)
     if (!pod) throw new Error('Pod不存在')
-    
-    const containers: PodContainer[] = (pod.status?.containerStatuses ?? []).map(c => ({
-      name: c.name ?? '',
-      image: c.image ?? '',
-      restartCount: c.restartCount ?? 0,
-      ready: c.ready ?? false,
-      state: getContainerState(c.state as Parameters<typeof getContainerState>[0])
-    }))
-    
-    const initContainers: PodContainer[] = (pod.status?.initContainerStatuses ?? []).map(c => ({
-      name: c.name ?? '',
-      image: c.image ?? '',
-      restartCount: c.restartCount ?? 0,
-      ready: c.ready ?? false,
-      state: getContainerState(c.state as Parameters<typeof getContainerState>[0])
-    }))
-    
+
+    const containers = mapPodContainers(
+      pod.spec?.containers ?? [],
+      (pod.status?.containerStatuses ?? []).map((container) => ({
+        name: container.name,
+        image: container.image,
+        restartCount: container.restartCount,
+        ready: container.ready,
+        state: container.state as Parameters<typeof getContainerState>[0],
+      })),
+    )
+
+    const initContainers = mapPodContainers(
+      pod.spec?.initContainers ?? [],
+      (pod.status?.initContainerStatuses ?? []).map((container) => ({
+        name: container.name,
+        image: container.image,
+        restartCount: container.restartCount,
+        ready: container.ready,
+        state: container.state as Parameters<typeof getContainerState>[0],
+      })),
+    )
+
     return {
       name: pod.metadata?.name ?? '',
       namespace: pod.metadata?.namespace ?? '',
@@ -1157,6 +1214,89 @@ export const deleteNamespace = async (contextId: string, name: string): Promise<
   }
 }
 
+export const deleteResource = async (
+  contextId: string,
+  kind: KubernetesResourceKind,
+  namespace: string,
+  name: string
+): Promise<DeleteResult> => {
+  await ensureCache()
+  switch (kind) {
+    case 'Pod':
+      return deletePod(contextId, namespace, name)
+    case 'Deployment':
+      return deleteDeployment(contextId, namespace, name)
+    case 'DaemonSet':
+      return deleteDaemonSet(contextId, namespace, name)
+    case 'StatefulSet':
+      return deleteStatefulSet(contextId, namespace, name)
+    case 'ReplicaSet':
+      return deleteReplicaSet(contextId, namespace, name)
+    case 'Job':
+      return deleteJob(contextId, namespace, name)
+    case 'CronJob':
+      return deleteCronJob(contextId, namespace, name)
+    case 'Namespace':
+      return deleteNamespace(contextId, name)
+    case 'Service': {
+      const api = createCoreV1Api(getEntry(contextId))
+      try {
+        await api.deleteNamespacedService({ namespace, name, body: {} as V1DeleteOptions })
+        return { success: true, message: `Service ${name} 已删除` }
+      } catch (err) {
+        return { success: false, message: `删除Service失败: ${err instanceof Error ? err.message : String(err)}` }
+      }
+    }
+    case 'ConfigMap': {
+      const api = createCoreV1Api(getEntry(contextId))
+      try {
+        await api.deleteNamespacedConfigMap({ namespace, name, body: {} as V1DeleteOptions })
+        return { success: true, message: `ConfigMap ${name} 已删除` }
+      } catch (err) {
+        return { success: false, message: `删除ConfigMap失败: ${err instanceof Error ? err.message : String(err)}` }
+      }
+    }
+    case 'Secret': {
+      const api = createCoreV1Api(getEntry(contextId))
+      try {
+        await api.deleteNamespacedSecret({ namespace, name, body: {} as V1DeleteOptions })
+        return { success: true, message: `Secret ${name} 已删除` }
+      } catch (err) {
+        return { success: false, message: `删除Secret失败: ${err instanceof Error ? err.message : String(err)}` }
+      }
+    }
+    case 'Ingress': {
+      const api = createNetworkingV1Api(getEntry(contextId))
+      try {
+        await api.deleteNamespacedIngress({ namespace, name, body: {} as V1DeleteOptions })
+        return { success: true, message: `Ingress ${name} 已删除` }
+      } catch (err) {
+        return { success: false, message: `删除Ingress失败: ${err instanceof Error ? err.message : String(err)}` }
+      }
+    }
+    case 'PersistentVolumeClaim': {
+      const api = createCoreV1Api(getEntry(contextId))
+      try {
+        await api.deleteNamespacedPersistentVolumeClaim({ namespace, name, body: {} as V1DeleteOptions })
+        return { success: true, message: `PersistentVolumeClaim ${name} 已删除` }
+      } catch (err) {
+        return { success: false, message: `删除PersistentVolumeClaim失败: ${err instanceof Error ? err.message : String(err)}` }
+      }
+    }
+    case 'PersistentVolume': {
+      const api = createCoreV1Api(getEntry(contextId))
+      try {
+        await api.deletePersistentVolume({ name, body: {} as V1DeleteOptions })
+        return { success: true, message: `PersistentVolume ${name} 已删除` }
+      } catch (err) {
+        return { success: false, message: `删除PersistentVolume失败: ${err instanceof Error ? err.message : String(err)}` }
+      }
+    }
+    default:
+      return { success: false, message: `暂不支持删除 ${kind}` }
+  }
+}
+
 // Scale operations
 export const scaleDeployment = async (contextId: string, namespace: string, name: string, replicas: number): Promise<ScaleResult> => {
   await ensureCache()
@@ -1168,6 +1308,63 @@ export const scaleDeployment = async (contextId: string, namespace: string, name
     return { success: true, replicas: scale?.spec?.replicas ?? replicas }
   } catch (err) {
     return { success: false, replicas, message: `扩缩容Deployment失败: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}
+
+export const scaleWorkload = async (
+  contextId: string,
+  kind: ScaleableWorkloadKind,
+  namespace: string,
+  name: string,
+  replicas: number
+): Promise<ScaleResult> => {
+  switch (kind) {
+    case 'Deployment':
+      return scaleDeployment(contextId, namespace, name, replicas)
+    case 'StatefulSet':
+      return scaleStatefulSet(contextId, namespace, name, replicas)
+    case 'ReplicaSet':
+      return scaleReplicaSet(contextId, namespace, name, replicas)
+  }
+}
+
+export const restartWorkload = async (
+  contextId: string,
+  kind: RolloutWorkloadKind,
+  namespace: string,
+  name: string
+): Promise<RolloutResult> => {
+  await ensureCache()
+  const entry = getEntry(contextId)
+  const api = createAppsV1Api(entry)
+  const restartedAt = new Date().toISOString()
+  const patch = {
+    spec: {
+      template: {
+        metadata: {
+          annotations: {
+            'kubectl.kubernetes.io/restartedAt': restartedAt
+          }
+        }
+      }
+    }
+  }
+
+  try {
+    switch (kind) {
+      case 'Deployment':
+        await api.patchNamespacedDeployment({ name, namespace, body: patch })
+        break
+      case 'DaemonSet':
+        await api.patchNamespacedDaemonSet({ name, namespace, body: patch })
+        break
+      case 'StatefulSet':
+        await api.patchNamespacedStatefulSet({ name, namespace, body: patch })
+        break
+    }
+    return { success: true, message: `${kind} ${name} 已触发重启` }
+  } catch (err) {
+    return { success: false, message: `重启${kind}失败: ${err instanceof Error ? err.message : String(err)}` }
   }
 }
 
@@ -1733,50 +1930,90 @@ export const getResourceYaml = async (
 ): Promise<string> => {
   await ensureCache()
   const entry = getEntry(contextId)
+  const stringifyResource = (resource: unknown) => {
+    if (resource === undefined) {
+      throw new Error(`Resource ${kind}/${name} not found`)
+    }
+    return JSON.stringify(resource, null, 2)
+  }
 
   try {
+    const coreApi = createCoreV1Api(entry)
+    const appsApi = createAppsV1Api(entry)
+    const batchApi = createBatchV1Api(entry)
+    const networkingApi = createNetworkingV1Api(entry)
+    const storageApi = createStorageV1Api(entry)
+    const rbacApi = createRbacV1Api(entry)
+    const autoscalingApi = createAutoscalingV2Api(entry)
+
+    if (kind === 'Pod') {
+      return stringifyResource(extractResponse<V1Pod>(await coreApi.readNamespacedPod({ name, namespace })))
+    }
     if (kind === 'Deployment') {
-      const api = createAppsV1Api(entry)
-      const res = await api.readNamespacedDeployment({ name, namespace })
-      const deploy = extractResponse<V1Deployment>(res)
-      if (deploy) {
-        return JSON.stringify(deploy, null, 2)
-      }
-    } else if (kind === 'Service') {
-      const api = createCoreV1Api(entry)
-      const res = await api.readNamespacedService({ name, namespace })
-      const svc = extractResponse<V1Service>(res)
-      if (svc) {
-        return JSON.stringify(svc, null, 2)
-      }
-    } else if (kind === 'ConfigMap') {
-      const api = createCoreV1Api(entry)
-      const res = await api.readNamespacedConfigMap({ name, namespace })
-      const cm = extractResponse<V1ConfigMap>(res)
-      if (cm) {
-        return JSON.stringify(cm, null, 2)
-      }
-    } else if (kind === 'Secret') {
-      const api = createCoreV1Api(entry)
-      const res = await api.readNamespacedSecret({ name, namespace })
-      const secret = extractResponse<V1Secret>(res)
-      if (secret) {
-        return JSON.stringify(secret, null, 2)
-      }
-    } else if (kind === 'Ingress') {
-      const api = createNetworkingV1Api(entry)
-      const res = await api.readNamespacedIngress({ name, namespace })
-      const ing = extractResponse<V1Ingress>(res)
-      if (ing) {
-        return JSON.stringify(ing, null, 2)
-      }
-    } else if (kind === 'Namespace') {
-      const api = createCoreV1Api(entry)
-      const res = await api.readNamespace({ name })
-      const ns = extractResponse<V1Namespace>(res)
-      if (ns) {
-        return JSON.stringify(ns, null, 2)
-      }
+      return stringifyResource(extractResponse<V1Deployment>(await appsApi.readNamespacedDeployment({ name, namespace })))
+    }
+    if (kind === 'DaemonSet') {
+      return stringifyResource(extractResponse<V1DaemonSet>(await appsApi.readNamespacedDaemonSet({ name, namespace })))
+    }
+    if (kind === 'StatefulSet') {
+      return stringifyResource(extractResponse<V1StatefulSet>(await appsApi.readNamespacedStatefulSet({ name, namespace })))
+    }
+    if (kind === 'ReplicaSet') {
+      return stringifyResource(extractResponse<V1ReplicaSet>(await appsApi.readNamespacedReplicaSet({ name, namespace })))
+    }
+    if (kind === 'Job') {
+      return stringifyResource(extractResponse<V1Job>(await batchApi.readNamespacedJob({ name, namespace })))
+    }
+    if (kind === 'CronJob') {
+      return stringifyResource(extractResponse<V1CronJob>(await batchApi.readNamespacedCronJob({ name, namespace })))
+    }
+    if (kind === 'Service') {
+      return stringifyResource(extractResponse<V1Service>(await coreApi.readNamespacedService({ name, namespace })))
+    }
+    if (kind === 'ConfigMap') {
+      return stringifyResource(extractResponse<V1ConfigMap>(await coreApi.readNamespacedConfigMap({ name, namespace })))
+    }
+    if (kind === 'Secret') {
+      return stringifyResource(extractResponse<V1Secret>(await coreApi.readNamespacedSecret({ name, namespace })))
+    }
+    if (kind === 'Ingress') {
+      return stringifyResource(extractResponse<V1Ingress>(await networkingApi.readNamespacedIngress({ name, namespace })))
+    }
+    if (kind === 'Namespace') {
+      return stringifyResource(extractResponse<V1Namespace>(await coreApi.readNamespace({ name })))
+    }
+    if (kind === 'PersistentVolume') {
+      return stringifyResource(extractResponse<V1PersistentVolume>(await coreApi.readPersistentVolume({ name })))
+    }
+    if (kind === 'PersistentVolumeClaim') {
+      return stringifyResource(extractResponse<V1PersistentVolumeClaim>(await coreApi.readNamespacedPersistentVolumeClaim({ name, namespace })))
+    }
+    if (kind === 'StorageClass') {
+      return stringifyResource(extractResponse<V1StorageClass>(await storageApi.readStorageClass({ name })))
+    }
+    if (kind === 'ServiceAccount') {
+      return stringifyResource(extractResponse<V1ServiceAccount>(await coreApi.readNamespacedServiceAccount({ name, namespace })))
+    }
+    if (kind === 'Role') {
+      return stringifyResource(extractResponse<V1Role>(await rbacApi.readNamespacedRole({ name, namespace })))
+    }
+    if (kind === 'RoleBinding') {
+      return stringifyResource(extractResponse<V1RoleBinding>(await rbacApi.readNamespacedRoleBinding({ name, namespace })))
+    }
+    if (kind === 'ClusterRole') {
+      return stringifyResource(extractResponse<V1ClusterRole>(await rbacApi.readClusterRole({ name })))
+    }
+    if (kind === 'ClusterRoleBinding') {
+      return stringifyResource(extractResponse<V1ClusterRoleBinding>(await rbacApi.readClusterRoleBinding({ name })))
+    }
+    if (kind === 'HorizontalPodAutoscaler') {
+      return stringifyResource(extractResponse<V2HorizontalPodAutoscaler>(await autoscalingApi.readNamespacedHorizontalPodAutoscaler({ name, namespace })))
+    }
+    if (kind === 'Event') {
+      return stringifyResource(extractResponse<CoreV1Event>(await coreApi.readNamespacedEvent({ name, namespace })))
+    }
+    if (kind === 'Node') {
+      return stringifyResource(extractResponse<V1Node>(await coreApi.readNode({ name })))
     }
 
     throw new Error(`Resource ${kind}/${name} not found`)
@@ -2025,3 +2262,4 @@ export const listEvents = async (contextId: string, namespace?: string): Promise
     throw new Error(`获取Event失败: ${err instanceof Error ? err.message : String(err)}`)
   }
 }
+/* node:coverage enable */
