@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { PodInfo } from '../../../../shared/types'
-import { k8sApi } from '../../api/provider'
+import type { PodInfo } from '../../../../shared/types'
+import { isWebMode, k8sApi } from '../../api/provider'
 
 interface LogViewerModalProps {
   pod: PodInfo | null
@@ -17,10 +17,12 @@ export const LogViewerModal = ({ pod, contextId, onClose }: LogViewerModalProps)
   const [podContextError, setPodContextError] = useState<string | null>(null)
   const [containerName, setContainerName] = useState('')
   const [autoScroll, setAutoScroll] = useState(true)
+  const [follow, setFollow] = useState(true)
   const [tailLines, setTailLines] = useState(100)
   const logsEndRef = useRef<HTMLDivElement>(null)
   const logsContainerRef = useRef<HTMLPreElement>(null)
   const requestIdRef = useRef(0)
+  const streamIdRef = useRef<string | null>(null)
   const displayPod = resolvedPod ?? pod
   const containers = displayPod?.containers || []
   const resolvedContainerName = containers.some((c) => c.name === containerName)
@@ -37,6 +39,7 @@ export const LogViewerModal = ({ pod, contextId, onClose }: LogViewerModalProps)
       setLogs('')
       setError(null)
       setPodContextError(null)
+      setFollow(true)
       return
     }
 
@@ -75,10 +78,76 @@ export const LogViewerModal = ({ pod, contextId, onClose }: LogViewerModalProps)
   }, [containerName, resolvedContainerName])
 
   useEffect(() => {
-    if (displayPod && contextId && !resolvingPod) {
+    if (resolvedPod && contextId && !resolvingPod && !podContextError && !follow) {
       fetchLogs(resolvedContainerName)
     }
-  }, [displayPod, contextId, resolvedContainerName, tailLines, resolvingPod])
+  }, [contextId, follow, podContextError, resolvedContainerName, resolvedPod, resolvingPod, tailLines])
+
+  useEffect(() => {
+    return k8sApi.onPushEvent((event) => {
+      if (event.type === 'log:chunk' && event.streamId === streamIdRef.current) {
+        setLogs((current) => current + event.chunk)
+        setLoading(false)
+      }
+
+      if (event.type === 'log:end' && event.streamId === streamIdRef.current) {
+        streamIdRef.current = null
+        setLoading(false)
+        if (event.error) {
+          setError(event.error)
+        }
+      }
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!resolvedPod || !contextId || resolvingPod || !follow || podContextError) return
+
+    let cancelled = false
+    setLogs('')
+    setLoading(true)
+    setError(null)
+
+    if (isWebMode) {
+      fetchLogs(resolvedContainerName)
+      const interval = window.setInterval(() => {
+        fetchLogs(resolvedContainerName)
+      }, 2000)
+      return () => {
+        window.clearInterval(interval)
+      }
+    }
+
+    k8sApi.startPodLogStream(contextId, {
+      namespace: resolvedPod.namespace,
+      podName: resolvedPod.name,
+      containerName: resolvedContainerName || undefined,
+      tailLines,
+    })
+      .then((result) => {
+        if (cancelled) {
+          void k8sApi.stopPodLogStream(result.streamId)
+          return
+        }
+        streamIdRef.current = result.streamId
+        setLoading(false)
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setLoading(false)
+          setError(err instanceof Error ? err.message : '启动实时日志失败')
+        }
+      })
+
+    return () => {
+      cancelled = true
+      const currentStreamId = streamIdRef.current
+      streamIdRef.current = null
+      if (currentStreamId) {
+        void k8sApi.stopPodLogStream(currentStreamId)
+      }
+    }
+  }, [contextId, follow, podContextError, resolvedContainerName, resolvedPod, resolvingPod, tailLines])
 
   useEffect(() => {
     if (autoScroll && logsEndRef.current) {
@@ -87,15 +156,15 @@ export const LogViewerModal = ({ pod, contextId, onClose }: LogViewerModalProps)
   }, [logs, autoScroll])
 
   const fetchLogs = async (targetContainerName = resolvedContainerName) => {
-    if (!displayPod) return
+    if (!resolvedPod) return
     const requestId = ++requestIdRef.current
     setLoading(true)
     setError(null)
     try {
       const logContent = await k8sApi.getPodLogs(
         contextId,
-        displayPod.namespace,
-        displayPod.name,
+        resolvedPod.namespace,
+        resolvedPod.name,
         targetContainerName || undefined,
         tailLines
       )
@@ -169,7 +238,7 @@ export const LogViewerModal = ({ pod, contextId, onClose }: LogViewerModalProps)
                 <option value={1000}>1000</option>
               </select>
             </div>
-            <button className="log-viewer-btn" onClick={fetchLogs} disabled={loading}>
+            <button className="log-viewer-btn" onClick={fetchLogs} disabled={loading || follow}>
               刷新
             </button>
           </div>
@@ -181,6 +250,14 @@ export const LogViewerModal = ({ pod, contextId, onClose }: LogViewerModalProps)
                 onChange={(e) => setAutoScroll(e.target.checked)}
               />
               自动滚动
+            </label>
+            <label className="log-viewer-checkbox">
+              <input
+                type="checkbox"
+                checked={follow}
+                onChange={(e) => setFollow(e.target.checked)}
+              />
+              实时追踪
             </label>
             <button className="log-viewer-btn" onClick={handleCopyLogs}>
               复制
@@ -209,7 +286,7 @@ export const LogViewerModal = ({ pod, contextId, onClose }: LogViewerModalProps)
           <span className="log-viewer-info">
             {resolvedContainerName && `容器: ${resolvedContainerName}`}
             {resolvedContainerName && ' | '}
-            显示最近 {tailLines} 行
+            {follow ? `实时追踪最近 ${tailLines} 行` : `显示最近 ${tailLines} 行`}
           </span>
         </div>
       </div>

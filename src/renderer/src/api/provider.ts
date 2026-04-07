@@ -1,7 +1,7 @@
 // API provider that works in both Electron and Web modes
 // Detects the environment and uses the appropriate API
 
-import {
+import type {
   AddContextsResult,
   ClusterHealth,
   ClusterRoleBindingInfo,
@@ -20,16 +20,27 @@ import {
   IngressFormData,
   IngressInfo,
   JobInfo,
+  K7sPushEvent,
+  KubernetesResourceKind,
   NamespaceInfo,
   NodeInfo,
   NodeMetrics,
+  PodExecData,
+  PodExecResult,
+  PodLogStreamRequest,
+  PodLogStreamResult,
   PersistentVolumeClaimInfo,
   PersistentVolumeInfo,
   PodInfo,
   ReplicaSetInfo,
+  RolloutResult,
+  RolloutWorkloadKind,
   RoleBindingInfo,
   RoleInfo,
+  PortForwardRequest,
+  PortForwardResult,
   ScaleResult,
+  ScaleableWorkloadKind,
   SecretFormData,
   SecretInfo,
   ServiceAccountInfo,
@@ -108,11 +119,47 @@ interface WebSocketApi {
   createSecret: (contextId: string, data: SecretFormData) => Promise<CreateResult>
   createIngress: (contextId: string, data: IngressFormData) => Promise<CreateResult>
   updateDeployment: (contextId: string, namespace: string, name: string, data: Partial<DeploymentFormData>) => Promise<UpdateResult>
+  deleteResource: (contextId: string, kind: KubernetesResourceKind, namespace: string, name: string) => Promise<DeleteResult>
+  scaleWorkload: (contextId: string, kind: ScaleableWorkloadKind, namespace: string, name: string, replicas: number) => Promise<ScaleResult>
+  restartWorkload: (contextId: string, kind: RolloutWorkloadKind, namespace: string, name: string) => Promise<RolloutResult>
+  rollbackWorkload: (contextId: string, kind: RolloutWorkloadKind, namespace: string, name: string) => Promise<RolloutResult>
   applyYaml: (contextId: string, yaml: string) => Promise<CreateResult>
   getResourceYaml: (contextId: string, kind: string, namespace: string, name: string) => Promise<string>
+  startPodLogStream: (contextId: string, request: PodLogStreamRequest) => Promise<PodLogStreamResult>
+  stopPodLogStream: (streamId: string) => Promise<{ success: boolean }>
+  startPodExec: (contextId: string, request: PodExecData) => Promise<PodExecResult>
+  stopPodExec: (sessionId: string) => Promise<{ success: boolean }>
+  startPortForward: (contextId: string, request: PortForwardRequest) => Promise<PortForwardResult>
+  stopPortForward: (sessionId: string) => Promise<{ success: boolean }>
+  subscribeWatch: (contextId: string) => Promise<{ success: boolean }>
+  unsubscribeWatch: () => Promise<{ success: boolean }>
+  onPushEvent: (listener: (event: K7sPushEvent) => void) => () => void
 }
 
 export type { WebSocketApi }
+
+const pushListeners = new Set<(event: K7sPushEvent) => void>()
+let pushBridgeInitialized = false
+
+const dispatchPushEvent = (event: K7sPushEvent) => {
+  for (const listener of pushListeners) {
+    listener(event)
+  }
+}
+
+const ensurePushBridge = () => {
+  if (pushBridgeInitialized) return
+  pushBridgeInitialized = true
+
+  if (electronApi) {
+    electronApi.onPushEvent(dispatchPushEvent)
+    return
+  }
+
+  wsClient.onEvent('k7s:push-event', (event) => {
+    dispatchPushEvent(event as K7sPushEvent)
+  })
+}
 
 // The API interface exposed to the app
 export const k8sApi: WebSocketApi = {
@@ -401,6 +448,26 @@ export const k8sApi: WebSocketApi = {
     return wsClient.updateDeployment(contextId, namespace, name, data) as Promise<UpdateResult>
   },
 
+  deleteResource: async (contextId: string, kind: KubernetesResourceKind, namespace: string, name: string) => {
+    if (electronApi) return electronApi.deleteResource(contextId, kind, namespace, name)
+    return wsClient.deleteResource(contextId, kind, namespace, name) as Promise<DeleteResult>
+  },
+
+  scaleWorkload: async (contextId: string, kind: ScaleableWorkloadKind, namespace: string, name: string, replicas: number) => {
+    if (electronApi) return electronApi.scaleWorkload(contextId, kind, namespace, name, replicas)
+    return wsClient.scaleWorkload(contextId, kind, namespace, name, replicas) as Promise<ScaleResult>
+  },
+
+  restartWorkload: async (contextId: string, kind: RolloutWorkloadKind, namespace: string, name: string) => {
+    if (electronApi) return electronApi.restartWorkload(contextId, kind, namespace, name)
+    return wsClient.restartWorkload(contextId, kind, namespace, name) as Promise<RolloutResult>
+  },
+
+  rollbackWorkload: async (contextId: string, kind: RolloutWorkloadKind, namespace: string, name: string) => {
+    if (electronApi) return electronApi.rollbackWorkload(contextId, kind, namespace, name)
+    return wsClient.rollbackWorkload(contextId, kind, namespace, name) as Promise<RolloutResult>
+  },
+
   applyYaml: async (contextId: string, yaml: string) => {
     if (electronApi) return electronApi.applyYaml(contextId, yaml)
     return wsClient.applyYaml(contextId, yaml) as Promise<CreateResult>
@@ -409,6 +476,54 @@ export const k8sApi: WebSocketApi = {
   getResourceYaml: async (contextId: string, kind: string, namespace: string, name: string) => {
     if (electronApi) return electronApi.getResourceYaml(contextId, kind, namespace, name)
     return wsClient.getResourceYaml(contextId, kind, namespace, name) as Promise<string>
+  },
+
+  startPodLogStream: async (contextId: string, request: PodLogStreamRequest) => {
+    if (electronApi) return electronApi.startPodLogStream(contextId, request)
+    throw new Error('实时日志流仅在桌面模式可用')
+  },
+
+  stopPodLogStream: async (streamId: string) => {
+    if (electronApi) return electronApi.stopPodLogStream(streamId)
+    return { success: true }
+  },
+
+  startPodExec: async (contextId: string, request: PodExecData) => {
+    if (electronApi) return electronApi.startPodExec(contextId, request)
+    throw new Error('Pod Exec 仅在桌面模式可用')
+  },
+
+  stopPodExec: async (sessionId: string) => {
+    if (electronApi) return electronApi.stopPodExec(sessionId)
+    return { success: true }
+  },
+
+  startPortForward: async (contextId: string, request: PortForwardRequest) => {
+    if (electronApi) return electronApi.startPortForward(contextId, request)
+    throw new Error('端口转发仅在桌面模式可用')
+  },
+
+  stopPortForward: async (sessionId: string) => {
+    if (electronApi) return electronApi.stopPortForward(sessionId)
+    return { success: true }
+  },
+
+  subscribeWatch: async (contextId: string) => {
+    if (electronApi) return electronApi.subscribeWatch(contextId)
+    return wsClient.subscribeWatch(contextId) as Promise<{ success: boolean }>
+  },
+
+  unsubscribeWatch: async () => {
+    if (electronApi) return electronApi.unsubscribeWatch()
+    return wsClient.unsubscribeWatch() as Promise<{ success: boolean }>
+  },
+
+  onPushEvent: (listener) => {
+    ensurePushBridge()
+    pushListeners.add(listener)
+    return () => {
+      pushListeners.delete(listener)
+    }
   }
 }
 

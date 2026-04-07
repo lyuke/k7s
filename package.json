@@ -7,6 +7,8 @@
   "scripts": {
     "dev": "electron-vite dev",
     "start": "electron-vite dev",
+    "test": "node ./test/run-tests.js",
+    "test:coverage": "node ./test/run-coverage.js",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "icon:mac": "bash scripts/generate-mac-icon.sh",

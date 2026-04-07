@@ -1,15 +1,45 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import '@xterm/xterm/css/xterm.css'
 import { useClusterStore, useUIStore, usePreferencesStore, useTerminalStore, useTerminalInit } from './store'
-import {
+import type {
   ContextRecord,
+  KubernetesResourceKind,
   ResourceType,
-  ContextPrefs,
+  RolloutWorkloadKind,
+  ScaleableWorkloadKind,
 } from '../../shared/types'
-import { NodeDetailModal, PodDetailModal, DeploymentDetailModal, GenericDetailModal, LogViewerModal, CreateResourceModal, YamlEditorModal } from './components/Modals'
+import {
+  NodeDetailModal,
+  PodDetailModal,
+  DeploymentDetailModal,
+  GenericDetailModal,
+  LogViewerModal,
+  CreateResourceModal,
+  YamlEditorModal,
+  PodExecModal,
+  PortForwardModal,
+} from './components/Modals'
+import { isWebMode, k8sApi } from './api/provider'
 import { EmptyState, SortIcon } from './components/Clusters'
 
 type LoadState = 'idle' | 'loading' | 'ready' | 'error'
+type NoticeTone = 'info' | 'success' | 'error'
+type NoticeState = {
+  tone: NoticeTone
+  message: string
+} | null
+type TableField = {
+  label: string
+  field: string
+}
+type ActionSpec = {
+  key: string
+  label: string
+  className: string
+  onClick: () => void | Promise<void>
+  title?: string
+  disabled?: boolean
+}
 
 const formatSource = (source: string) => (source === 'default' ? '默认配置' : source)
 
@@ -47,6 +77,13 @@ interface ClusterCardProps {
   onClick: () => void
 }
 
+interface SummaryCardProps {
+  label: string
+  value: string | number
+  detail: string
+  tone?: 'default' | 'ready' | 'warn' | 'error'
+}
+
 const ClusterCard = ({ context, isActive, nodeCount, podCount, status, onClick }: ClusterCardProps) => {
   const getStatusClass = () => {
     if (status === 'loading') return 'loading'
@@ -78,6 +115,14 @@ const ClusterCard = ({ context, isActive, nodeCount, podCount, status, onClick }
     </div>
   )
 }
+
+const SummaryCard = ({ label, value, detail, tone = 'default' }: SummaryCardProps) => (
+  <div className={`summary-card ${tone}`}>
+    <div className="summary-card-label">{label}</div>
+    <div className="summary-card-value">{value}</div>
+    <div className="summary-card-detail">{detail}</div>
+  </div>
+)
 
 const App = () => {
   // Cluster store
@@ -114,12 +159,9 @@ const App = () => {
   const lastRefreshTime = useClusterStore((s) => s.lastRefreshTime)
   const selectedContext = useClusterStore((s) => s.selectedContext)
   const loadContexts = useClusterStore((s) => s.loadContexts)
+  const refreshAll = useClusterStore((s) => s.refreshAll)
   const selectContext = useClusterStore((s) => s.selectContext)
-  const loadNamespaces = useClusterStore((s) => s.loadNamespaces)
   const setSelectedNamespaces = useClusterStore((s) => s.setSelectedNamespaces)
-  const loadResources = useClusterStore((s) => s.loadResources)
-  const loadClusterHealth = useClusterStore((s) => s.loadClusterHealth)
-  const loadNewResources = useClusterStore((s) => s.loadNewResources)
   const handleAdd = useClusterStore((s) => s.handleAdd)
   const handleManualRefresh = useClusterStore((s) => s.handleManualRefresh)
 
@@ -130,8 +172,6 @@ const App = () => {
   const refreshInterval = useUIStore((s) => s.refreshInterval)
   const selectedResourceType = useUIStore((s) => s.selectedResourceType)
   const setSearchText = useUIStore((s) => s.setSearchText)
-  const setSortField = useUIStore((s) => s.setSortField)
-  const setSortDirection = useUIStore((s) => s.setSortDirection)
   const setRefreshInterval = useUIStore((s) => s.setRefreshInterval)
   const setSelectedResourceType = useUIStore((s) => s.setSelectedResourceType)
   const sortData = useUIStore((s) => s.sortData)
@@ -190,7 +230,6 @@ const App = () => {
   const editingName = usePreferencesStore((s) => s.editingName)
   const isAddingGroup = usePreferencesStore((s) => s.isAddingGroup)
   const newGroupName = usePreferencesStore((s) => s.newGroupName)
-  const dragging = usePreferencesStore((s) => s.dragging)
   const setEditingName = usePreferencesStore((s) => s.setEditingName)
   const setNewGroupName = usePreferencesStore((s) => s.setNewGroupName)
   const getDisplayName = usePreferencesStore((s) => s.getDisplayName)
@@ -212,56 +251,296 @@ const App = () => {
   const setShowTerminal = useTerminalStore((s) => s.setShowTerminal)
   const terminalRef = useRef<HTMLDivElement>(null)
 
-  // Initialize terminal with effect
+  // Initialize terminal
   useTerminalInit(showTerminal, selectedId, terminalRef)
 
-  // Additional local state
+  // Local state
   const [isAdding, setIsAdding] = useState(false)
-  const refreshTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const [notice, setNotice] = useState<NoticeState>(null)
+  const [watchConnected, setWatchConnected] = useState(false)
+  const [selectedPodForExec, setSelectedPodForExec] = useState<typeof pods[number] | null>(null)
+  const [selectedPodForPortForward, setSelectedPodForPortForward] = useState<typeof pods[number] | null>(null)
+  const refreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const watchRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Context map for quick lookup
   const ctxMap = useMemo(() => {
-    const m = new Map<string, ContextRecord>()
-    for (const c of contexts) m.set(c.id, c)
-    return m
+    const map = new Map<string, ContextRecord>()
+    for (const context of contexts) {
+      map.set(context.id, context)
+    }
+    return map
   }, [contexts])
 
   const selectedNamespace = selectedNamespaces[0] ?? ''
+  const selectedContextDisplayName = selectedContext
+    ? contextPrefs?.customNames[selectedContext.id] ?? selectedContext.name
+    : '请选择集群'
+  const currentResourceLabel = RESOURCE_TYPES.find((type) => type.key === selectedResourceType)?.label ?? 'Resource'
 
   const filterNamespacedData = <T extends { namespace: string }>(data: T[]) => {
     if (!selectedNamespace) return data
     return data.filter((item) => item.namespace === selectedNamespace)
   }
 
-  const getVisibleData = <T extends { name?: string; namespace?: string }>(data: T[]) => (
-    sortData(filterData(data))
-  )
+  const getVisibleData = <T extends { name?: string; namespace?: string }>(data: T[]) => sortData(filterData(data))
 
   const getVisibleNamespacedData = <T extends { name?: string; namespace: string }>(data: T[]) => (
     getVisibleData(filterNamespacedData(data))
   )
 
-  // Load context preferences on mount
+  const showNotice = (tone: NoticeTone, message: string) => {
+    setNotice({ tone, message })
+    if (noticeTimerRef.current) {
+      clearTimeout(noticeTimerRef.current)
+    }
+    noticeTimerRef.current = setTimeout(() => {
+      setNotice(null)
+      noticeTimerRef.current = null
+    }, 4000)
+  }
+
+  const openYamlEditor = (
+    mode: 'view' | 'edit' | 'create',
+    kind = 'YAML',
+    namespace = selectedNamespace,
+    name = '',
+  ) => {
+    setIsYamlEditorOpen(true, mode, { kind, namespace, name })
+  }
+
+  const refreshSelectedContext = async (isAutoRefresh = false) => {
+    if (!selectedId) return
+    await refreshAll(isAutoRefresh)
+  }
+
+  const stopRowAction = (event: MouseEvent<HTMLButtonElement>, action: () => void | Promise<void>) => {
+    event.stopPropagation()
+    void action()
+  }
+
+  const handleAddClick = async () => {
+    setIsAdding(true)
+    await handleAdd()
+    setIsAdding(false)
+  }
+
+  const handleDeleteResource = async (kind: KubernetesResourceKind, namespace: string, name: string) => {
+    if (!selectedId) return
+
+    const target = namespace ? `${namespace}/${name}` : name
+    const confirmed = window.confirm(`确认删除 ${kind} ${target}？此操作不可撤销。`)
+    if (!confirmed) return
+
+    try {
+      const result = await k8sApi.deleteResource(selectedId, kind, namespace, name)
+      if (!result.success) {
+        throw new Error(result.message || `删除 ${kind} 失败`)
+      }
+      showNotice('success', result.message || `${kind} ${target} 已删除`)
+      await refreshSelectedContext(true)
+    } catch (err) {
+      showNotice('error', err instanceof Error ? err.message : `删除 ${kind} 失败`)
+    }
+  }
+
+  const handleScaleWorkload = async (
+    kind: ScaleableWorkloadKind,
+    namespace: string,
+    name: string,
+    currentReplicas: number,
+  ) => {
+    if (!selectedId) return
+
+    const value = window.prompt(`设置 ${kind} ${namespace}/${name} 的副本数`, String(currentReplicas))
+    if (value === null) return
+
+    const replicas = Number(value)
+    if (!Number.isInteger(replicas) || replicas < 0) {
+      showNotice('error', '请输入大于等于 0 的整数副本数')
+      return
+    }
+
+    try {
+      const result = await k8sApi.scaleWorkload(selectedId, kind, namespace, name, replicas)
+      if (!result.success) {
+        throw new Error(result.message || `扩缩容 ${kind} 失败`)
+      }
+      showNotice('success', result.message || `${kind} ${namespace}/${name} 已调整到 ${result.replicas} 副本`)
+      await refreshSelectedContext(true)
+    } catch (err) {
+      showNotice('error', err instanceof Error ? err.message : `扩缩容 ${kind} 失败`)
+    }
+  }
+
+  const handleRestartWorkload = async (kind: RolloutWorkloadKind, namespace: string, name: string) => {
+    if (!selectedId) return
+    try {
+      const result = await k8sApi.restartWorkload(selectedId, kind, namespace, name)
+      if (!result.success) {
+        throw new Error(result.message || `重启 ${kind} 失败`)
+      }
+      showNotice('success', result.message || `${kind} ${namespace}/${name} 已触发重启`)
+      await refreshSelectedContext(true)
+    } catch (err) {
+      showNotice('error', err instanceof Error ? err.message : `重启 ${kind} 失败`)
+    }
+  }
+
+  const handleRollbackWorkload = async (kind: RolloutWorkloadKind, namespace: string, name: string) => {
+    if (!selectedId) return
+
+    const confirmed = window.confirm(`确认回滚 ${kind} ${namespace}/${name} 到上一个版本？`)
+    if (!confirmed) return
+
+    try {
+      const result = await k8sApi.rollbackWorkload(selectedId, kind, namespace, name)
+      if (!result.success) {
+        throw new Error(result.message || `回滚 ${kind} 失败`)
+      }
+      showNotice('success', result.message || `${kind} ${namespace}/${name} 已开始回滚`)
+      await refreshSelectedContext(true)
+    } catch (err) {
+      showNotice('error', err instanceof Error ? err.message : `回滚 ${kind} 失败`)
+    }
+  }
+
+  const getStatusPillClass = () => {
+    if (status === 'loading') return 'loading'
+    if (status === 'ready') return 'ready'
+    if (status === 'error') return 'error'
+    return ''
+  }
+
+  const renderTableHead = (fields: TableField[], includeActions = false) => (
+    <div className="table-row table-head">
+      {fields.map(({ label, field }) => (
+        <div key={field} onClick={() => handleSort(field)}>
+          {label}
+          <SortIcon direction={sortField === field ? sortDirection : undefined} />
+        </div>
+      ))}
+      {includeActions && <div>操作</div>}
+    </div>
+  )
+
+  const renderActions = (actions: ActionSpec[]) => (
+    <div className="table-row-actions">
+      {actions.map((action) => (
+        <button
+          key={action.key}
+          className={`action-btn ${action.className}`}
+          onClick={(event) => stopRowAction(event, action.onClick)}
+          title={action.title}
+          disabled={action.disabled}
+        >
+          {action.label}
+        </button>
+      ))}
+    </div>
+  )
+
+  const currentResourceCount = useMemo(() => {
+    switch (selectedResourceType) {
+      case 'nodes':
+        return getVisibleData(nodes).length
+      case 'pods':
+        return getVisibleNamespacedData(pods).length
+      case 'deployments':
+        return getVisibleNamespacedData(deployments).length
+      case 'daemonsets':
+        return getVisibleNamespacedData(daemonSets).length
+      case 'statefulsets':
+        return getVisibleNamespacedData(statefulSets).length
+      case 'replicasets':
+        return getVisibleNamespacedData(replicaSets).length
+      case 'jobs':
+        return getVisibleNamespacedData(jobs).length
+      case 'cronjobs':
+        return getVisibleNamespacedData(cronJobs).length
+      case 'services':
+        return getVisibleNamespacedData(services).length
+      case 'configmaps':
+        return getVisibleNamespacedData(configMaps).length
+      case 'secrets':
+        return getVisibleNamespacedData(secrets).length
+      case 'ingresses':
+        return getVisibleNamespacedData(ingresses).length
+      case 'persistentvolumes':
+        return getVisibleData(persistentVolumes).length
+      case 'persistentvolumeclaims':
+        return getVisibleNamespacedData(persistentVolumeClaims).length
+      case 'storageclasses':
+        return getVisibleData(storageClasses).length
+      case 'serviceaccounts':
+        return getVisibleNamespacedData(serviceAccounts).length
+      case 'roles':
+        return getVisibleNamespacedData(roles).length
+      case 'rolebindings':
+        return getVisibleNamespacedData(roleBindings).length
+      case 'clusterroles':
+        return getVisibleData(clusterRoles).length
+      case 'clusterrolebindings':
+        return getVisibleData(clusterRoleBindings).length
+      case 'horizontalpodautoscalers':
+        return getVisibleNamespacedData(hpas).length
+      case 'events':
+        return getVisibleNamespacedData(events).length
+      default:
+        return 0
+    }
+  }, [
+    clusterRoleBindings,
+    clusterRoles,
+    configMaps,
+    cronJobs,
+    daemonSets,
+    deployments,
+    events,
+    getVisibleData,
+    getVisibleNamespacedData,
+    hpas,
+    ingresses,
+    jobs,
+    nodes,
+    persistentVolumeClaims,
+    persistentVolumes,
+    pods,
+    replicaSets,
+    roleBindings,
+    roles,
+    secrets,
+    selectedResourceType,
+    serviceAccounts,
+    services,
+    statefulSets,
+    storageClasses,
+  ])
+
+  const warningEventsCount = useMemo(() => events.filter((event) => event.type === 'Warning').length, [events])
+  const readyNodeCount = clusterHealth?.readyNodes ?? nodes.filter((node) => node.status === 'Ready').length
+  const totalNodeCount = clusterHealth?.totalNodes ?? nodes.length
+  const runningPodCount = clusterHealth?.runningPods ?? pods.filter((pod) => pod.status === 'Running').length
+  const totalPodCount = clusterHealth?.totalPods ?? pods.length
+  const pendingPodCount = clusterHealth?.pendingPods ?? pods.filter((pod) => pod.status === 'Pending').length
+  const failedPodCount = clusterHealth?.failedPods ?? pods.filter((pod) => pod.status === 'Failed').length
+  const workloadCount = deployments.length + daemonSets.length + statefulSets.length + replicaSets.length + jobs.length + cronJobs.length
+  const selectedClusterCardStatus: LoadState = watchConnected && status === 'ready' ? 'ready' : status
+
+  // Preferences and initial context loading
   useEffect(() => {
     loadContextPrefs()
   }, [loadContextPrefs])
 
-  // Initial load of contexts
   useEffect(() => {
     loadContexts()
   }, [loadContexts])
 
-  // Load namespaces and resources when selected context changes
   useEffect(() => {
-    if (selectedId) {
-      loadNamespaces()
-      loadResources()
-      loadClusterHealth()
-      loadNewResources()
-    }
-  }, [selectedId, loadNamespaces, loadResources, loadClusterHealth, loadNewResources])
+    if (!selectedId) return
+    void refreshSelectedContext()
+  }, [selectedId, refreshAll])
 
-  // Refresh timer effect
   useEffect(() => {
     if (!selectedId || refreshInterval === 0) {
       if (refreshTimerRef.current) {
@@ -272,9 +551,7 @@ const App = () => {
     }
 
     refreshTimerRef.current = setInterval(() => {
-      if (selectedId) {
-        loadResources(true)
-      }
+      void refreshSelectedContext(true)
     }, refreshInterval * 1000)
 
     return () => {
@@ -283,39 +560,74 @@ const App = () => {
         refreshTimerRef.current = null
       }
     }
-  }, [selectedId, refreshInterval, loadResources])
+  }, [selectedId, refreshInterval, refreshAll])
 
-  // Handle add with loading state
-  const handleAddClick = async () => {
-    setIsAdding(true)
-    await handleAdd()
-    setIsAdding(false)
-  }
+  useEffect(() => {
+    if (!selectedId) {
+      setWatchConnected(false)
+      return
+    }
 
-  // Status pill class
-  const getStatusPillClass = () => {
-    if (status === 'loading') return 'loading'
-    if (status === 'ready') return 'ready'
-    if (status === 'error') return 'error'
-    return ''
-  }
+    let active = true
+    const unsubscribePush = k8sApi.onPushEvent((event) => {
+      if (event.type !== 'watch' || event.contextId !== selectedId) return
 
-  // Render resource table based on selected type
+      if (watchRefreshTimerRef.current) {
+        clearTimeout(watchRefreshTimerRef.current)
+      }
+
+      watchRefreshTimerRef.current = setTimeout(() => {
+        if (active) {
+          void refreshSelectedContext(true)
+        }
+      }, 700)
+    })
+
+    void k8sApi.subscribeWatch(selectedId)
+      .then(() => {
+        if (active) {
+          setWatchConnected(true)
+        }
+      })
+      .catch((err) => {
+        if (!active) return
+        setWatchConnected(false)
+        showNotice('error', err instanceof Error ? `Watch 订阅失败: ${err.message}` : 'Watch 订阅失败')
+      })
+
+    return () => {
+      active = false
+      setWatchConnected(false)
+      if (watchRefreshTimerRef.current) {
+        clearTimeout(watchRefreshTimerRef.current)
+        watchRefreshTimerRef.current = null
+      }
+      unsubscribePush()
+      void k8sApi.unsubscribeWatch()
+    }
+  }, [selectedId, refreshAll])
+
+  useEffect(() => {
+    return () => {
+      if (refreshTimerRef.current) clearInterval(refreshTimerRef.current)
+      if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current)
+      if (watchRefreshTimerRef.current) clearTimeout(watchRefreshTimerRef.current)
+    }
+  }, [])
+
   const renderResourceTable = () => {
-    const handleHeaderClick = (field: string) => () => handleSort(field)
-
     switch (selectedResourceType) {
-      case 'nodes':
+      case 'nodes': {
         const sortedNodes = getVisibleData(nodes)
         return (
           <div className="table">
-            <div className="table-row table-head">
-              <div onClick={handleHeaderClick('name')}>名称 <SortIcon direction={sortField === 'name' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('status')}>状态 <SortIcon direction={sortField === 'status' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('version')}>版本 <SortIcon direction={sortField === 'version' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('roles')}>角色 <SortIcon direction={sortField === 'roles' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('age')}>存活 <SortIcon direction={sortField === 'age' ? sortDirection : undefined} /></div>
-            </div>
+            {renderTableHead([
+              { label: '名称', field: 'name' },
+              { label: '状态', field: 'status' },
+              { label: '版本', field: 'version' },
+              { label: '角色', field: 'roles' },
+              { label: '存活', field: 'age' },
+            ], true)}
             {sortedNodes.map((node) => (
               <div className="table-row clickable" key={node.name} onClick={() => handleNodeClick(node.name, selectedId)}>
                 <div>{node.name}</div>
@@ -323,24 +635,34 @@ const App = () => {
                 <div>{node.version}</div>
                 <div>{node.roles}</div>
                 <div>{node.age}</div>
+                {renderActions([
+                  {
+                    key: 'yaml',
+                    label: 'YAML',
+                    className: 'yaml-btn',
+                    onClick: () => openYamlEditor('view', 'Node', '', node.name),
+                    title: '查看 YAML',
+                  },
+                ])}
               </div>
             ))}
             {sortedNodes.length === 0 && <div className="table-empty">暂无节点数据</div>}
           </div>
         )
+      }
 
-      case 'pods':
+      case 'pods': {
         const sortedPods = getVisibleNamespacedData(pods)
         return (
           <div className="table">
-            <div className="table-row table-head">
-              <div onClick={handleHeaderClick('name')}>名称 <SortIcon direction={sortField === 'name' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('namespace')}>命名空间 <SortIcon direction={sortField === 'namespace' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('status')}>状态 <SortIcon direction={sortField === 'status' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('nodeName')}>节点 <SortIcon direction={sortField === 'nodeName' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('restarts')}>重启 <SortIcon direction={sortField === 'restarts' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('age')}>存活 <SortIcon direction={sortField === 'age' ? sortDirection : undefined} /></div>
-            </div>
+            {renderTableHead([
+              { label: '名称', field: 'name' },
+              { label: '命名空间', field: 'namespace' },
+              { label: '状态', field: 'status' },
+              { label: '节点', field: 'nodeName' },
+              { label: '重启', field: 'restarts' },
+              { label: '存活', field: 'age' },
+            ], true)}
             {sortedPods.map((pod) => (
               <div className="table-row clickable" key={`${pod.namespace}-${pod.name}`} onClick={() => handlePodClick(pod, selectedId)}>
                 <div>{pod.name}</div>
@@ -349,36 +671,62 @@ const App = () => {
                 <div>{pod.nodeName}</div>
                 <div>{pod.restarts}</div>
                 <div>{pod.age}</div>
-                <div className="table-row-actions">
-                  <button
-                    className="action-btn logs-btn"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      handleOpenPodLogs(pod)
-                    }}
-                    title="查看日志"
-                  >
-                    Logs
-                  </button>
-                </div>
+                {renderActions([
+                  {
+                    key: 'logs',
+                    label: 'Logs',
+                    className: 'logs-btn',
+                    onClick: () => handleOpenPodLogs(pod),
+                    title: '查看日志',
+                  },
+                  {
+                    key: 'exec',
+                    label: 'Exec',
+                    className: 'scale-btn',
+                    onClick: () => setSelectedPodForExec(pod),
+                    title: '执行命令',
+                  },
+                  {
+                    key: 'port',
+                    label: 'Port',
+                    className: 'scale-btn',
+                    onClick: () => setSelectedPodForPortForward(pod),
+                    title: '端口转发',
+                  },
+                  {
+                    key: 'yaml',
+                    label: 'YAML',
+                    className: 'yaml-btn',
+                    onClick: () => openYamlEditor('view', 'Pod', pod.namespace, pod.name),
+                    title: '查看 YAML',
+                  },
+                  {
+                    key: 'delete',
+                    label: 'Delete',
+                    className: 'delete-btn',
+                    onClick: () => handleDeleteResource('Pod', pod.namespace, pod.name),
+                    title: '删除 Pod',
+                  },
+                ])}
               </div>
             ))}
-            {sortedPods.length === 0 && <div className="table-empty">暂无Pod数据</div>}
+            {sortedPods.length === 0 && <div className="table-empty">暂无 Pod 数据</div>}
           </div>
         )
+      }
 
-      case 'deployments':
+      case 'deployments': {
         const sortedDeployments = getVisibleNamespacedData(deployments)
         return (
           <div className="table">
-            <div className="table-row table-head">
-              <div onClick={handleHeaderClick('name')}>名称 <SortIcon direction={sortField === 'name' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('namespace')}>命名空间 <SortIcon direction={sortField === 'namespace' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('replicas')}>副本 <SortIcon direction={sortField === 'replicas' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('readyReplicas')}>就绪 <SortIcon direction={sortField === 'readyReplicas' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('availableReplicas')}>可用 <SortIcon direction={sortField === 'availableReplicas' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('age')}>存活 <SortIcon direction={sortField === 'age' ? sortDirection : undefined} /></div>
-            </div>
+            {renderTableHead([
+              { label: '名称', field: 'name' },
+              { label: '命名空间', field: 'namespace' },
+              { label: '副本', field: 'replicas' },
+              { label: '就绪', field: 'readyReplicas' },
+              { label: '可用', field: 'availableReplicas' },
+              { label: '存活', field: 'age' },
+            ], true)}
             {sortedDeployments.map((deploy) => (
               <div className="table-row clickable" key={`${deploy.namespace}-${deploy.name}`} onClick={() => handleDeploymentClick(deploy.namespace, deploy.name, selectedId)}>
                 <div>{deploy.name}</div>
@@ -387,98 +735,229 @@ const App = () => {
                 <div>{deploy.readyReplicas}</div>
                 <div>{deploy.availableReplicas}</div>
                 <div>{deploy.age}</div>
+                {renderActions([
+                  {
+                    key: 'scale',
+                    label: 'Scale',
+                    className: 'scale-btn',
+                    onClick: () => handleScaleWorkload('Deployment', deploy.namespace, deploy.name, deploy.replicas),
+                    title: '扩缩容',
+                  },
+                  {
+                    key: 'restart',
+                    label: 'Restart',
+                    className: 'logs-btn',
+                    onClick: () => handleRestartWorkload('Deployment', deploy.namespace, deploy.name),
+                    title: '滚动重启',
+                  },
+                  {
+                    key: 'rollback',
+                    label: 'Rollback',
+                    className: 'yaml-btn',
+                    onClick: () => handleRollbackWorkload('Deployment', deploy.namespace, deploy.name),
+                    title: '回滚到上一版本',
+                  },
+                  {
+                    key: 'yaml',
+                    label: 'YAML',
+                    className: 'yaml-btn',
+                    onClick: () => openYamlEditor('edit', 'Deployment', deploy.namespace, deploy.name),
+                    title: '编辑 YAML',
+                  },
+                  {
+                    key: 'delete',
+                    label: 'Delete',
+                    className: 'delete-btn',
+                    onClick: () => handleDeleteResource('Deployment', deploy.namespace, deploy.name),
+                    title: '删除 Deployment',
+                  },
+                ])}
               </div>
             ))}
-            {sortedDeployments.length === 0 && <div className="table-empty">暂无Deployment数据</div>}
+            {sortedDeployments.length === 0 && <div className="table-empty">暂无 Deployment 数据</div>}
           </div>
         )
+      }
 
-      case 'daemonsets':
+      case 'daemonsets': {
         const sortedDaemonSets = getVisibleNamespacedData(daemonSets)
         return (
           <div className="table">
-            <div className="table-row table-head">
-              <div onClick={handleHeaderClick('name')}>名称 <SortIcon direction={sortField === 'name' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('namespace')}>命名空间 <SortIcon direction={sortField === 'namespace' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('desiredNumberScheduled')}>期望 <SortIcon direction={sortField === 'desiredNumberScheduled' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('currentNumberScheduled')}>当前 <SortIcon direction={sortField === 'currentNumberScheduled' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('numberReady')}>就绪 <SortIcon direction={sortField === 'numberReady' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('age')}>存活 <SortIcon direction={sortField === 'age' ? sortDirection : undefined} /></div>
-            </div>
-            {sortedDaemonSets.map((ds) => (
-              <div className="table-row clickable" key={`${ds.namespace}-${ds.name}`} onClick={() => handleDaemonSetClick(ds.namespace, ds.name, selectedId)}>
-                <div>{ds.name}</div>
-                <div>{ds.namespace}</div>
-                <div>{ds.desiredNumberScheduled}</div>
-                <div>{ds.currentNumberScheduled}</div>
-                <div>{ds.numberReady}</div>
-                <div>{ds.age}</div>
+            {renderTableHead([
+              { label: '名称', field: 'name' },
+              { label: '命名空间', field: 'namespace' },
+              { label: '期望', field: 'desiredNumberScheduled' },
+              { label: '当前', field: 'currentNumberScheduled' },
+              { label: '就绪', field: 'numberReady' },
+              { label: '存活', field: 'age' },
+            ], true)}
+            {sortedDaemonSets.map((daemonSet) => (
+              <div className="table-row clickable" key={`${daemonSet.namespace}-${daemonSet.name}`} onClick={() => handleDaemonSetClick(daemonSet.namespace, daemonSet.name, selectedId)}>
+                <div>{daemonSet.name}</div>
+                <div>{daemonSet.namespace}</div>
+                <div>{daemonSet.desiredNumberScheduled}</div>
+                <div>{daemonSet.currentNumberScheduled}</div>
+                <div>{daemonSet.numberReady}</div>
+                <div>{daemonSet.age}</div>
+                {renderActions([
+                  {
+                    key: 'restart',
+                    label: 'Restart',
+                    className: 'logs-btn',
+                    onClick: () => handleRestartWorkload('DaemonSet', daemonSet.namespace, daemonSet.name),
+                    title: '滚动重启',
+                  },
+                  {
+                    key: 'rollback',
+                    label: 'Rollback',
+                    className: 'yaml-btn',
+                    onClick: () => handleRollbackWorkload('DaemonSet', daemonSet.namespace, daemonSet.name),
+                    title: '回滚到上一版本',
+                  },
+                  {
+                    key: 'yaml',
+                    label: 'YAML',
+                    className: 'yaml-btn',
+                    onClick: () => openYamlEditor('edit', 'DaemonSet', daemonSet.namespace, daemonSet.name),
+                    title: '编辑 YAML',
+                  },
+                  {
+                    key: 'delete',
+                    label: 'Delete',
+                    className: 'delete-btn',
+                    onClick: () => handleDeleteResource('DaemonSet', daemonSet.namespace, daemonSet.name),
+                    title: '删除 DaemonSet',
+                  },
+                ])}
               </div>
             ))}
-            {sortedDaemonSets.length === 0 && <div className="table-empty">暂无DaemonSet数据</div>}
+            {sortedDaemonSets.length === 0 && <div className="table-empty">暂无 DaemonSet 数据</div>}
           </div>
         )
+      }
 
-      case 'statefulsets':
+      case 'statefulsets': {
         const sortedStatefulSets = getVisibleNamespacedData(statefulSets)
         return (
           <div className="table">
-            <div className="table-row table-head">
-              <div onClick={handleHeaderClick('name')}>名称 <SortIcon direction={sortField === 'name' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('namespace')}>命名空间 <SortIcon direction={sortField === 'namespace' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('replicas')}>副本 <SortIcon direction={sortField === 'replicas' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('readyReplicas')}>就绪 <SortIcon direction={sortField === 'readyReplicas' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('age')}>存活 <SortIcon direction={sortField === 'age' ? sortDirection : undefined} /></div>
-            </div>
-            {sortedStatefulSets.map((sts) => (
-              <div className="table-row clickable" key={`${sts.namespace}-${sts.name}`} onClick={() => handleStatefulSetClick(sts.namespace, sts.name, selectedId)}>
-                <div>{sts.name}</div>
-                <div>{sts.namespace}</div>
-                <div>{sts.replicas}</div>
-                <div>{sts.readyReplicas}</div>
-                <div>{sts.age}</div>
+            {renderTableHead([
+              { label: '名称', field: 'name' },
+              { label: '命名空间', field: 'namespace' },
+              { label: '副本', field: 'replicas' },
+              { label: '就绪', field: 'readyReplicas' },
+              { label: '存活', field: 'age' },
+            ], true)}
+            {sortedStatefulSets.map((statefulSet) => (
+              <div className="table-row clickable" key={`${statefulSet.namespace}-${statefulSet.name}`} onClick={() => handleStatefulSetClick(statefulSet.namespace, statefulSet.name, selectedId)}>
+                <div>{statefulSet.name}</div>
+                <div>{statefulSet.namespace}</div>
+                <div>{statefulSet.replicas}</div>
+                <div>{statefulSet.readyReplicas}</div>
+                <div>{statefulSet.age}</div>
+                {renderActions([
+                  {
+                    key: 'scale',
+                    label: 'Scale',
+                    className: 'scale-btn',
+                    onClick: () => handleScaleWorkload('StatefulSet', statefulSet.namespace, statefulSet.name, statefulSet.replicas),
+                    title: '扩缩容',
+                  },
+                  {
+                    key: 'restart',
+                    label: 'Restart',
+                    className: 'logs-btn',
+                    onClick: () => handleRestartWorkload('StatefulSet', statefulSet.namespace, statefulSet.name),
+                    title: '滚动重启',
+                  },
+                  {
+                    key: 'rollback',
+                    label: 'Rollback',
+                    className: 'yaml-btn',
+                    onClick: () => handleRollbackWorkload('StatefulSet', statefulSet.namespace, statefulSet.name),
+                    title: '回滚到上一版本',
+                  },
+                  {
+                    key: 'yaml',
+                    label: 'YAML',
+                    className: 'yaml-btn',
+                    onClick: () => openYamlEditor('edit', 'StatefulSet', statefulSet.namespace, statefulSet.name),
+                    title: '编辑 YAML',
+                  },
+                  {
+                    key: 'delete',
+                    label: 'Delete',
+                    className: 'delete-btn',
+                    onClick: () => handleDeleteResource('StatefulSet', statefulSet.namespace, statefulSet.name),
+                    title: '删除 StatefulSet',
+                  },
+                ])}
               </div>
             ))}
-            {sortedStatefulSets.length === 0 && <div className="table-empty">暂无StatefulSet数据</div>}
+            {sortedStatefulSets.length === 0 && <div className="table-empty">暂无 StatefulSet 数据</div>}
           </div>
         )
+      }
 
-      case 'replicasets':
+      case 'replicasets': {
         const sortedReplicaSets = getVisibleNamespacedData(replicaSets)
         return (
           <div className="table">
-            <div className="table-row table-head">
-              <div onClick={handleHeaderClick('name')}>名称 <SortIcon direction={sortField === 'name' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('namespace')}>命名空间 <SortIcon direction={sortField === 'namespace' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('replicas')}>副本 <SortIcon direction={sortField === 'replicas' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('readyReplicas')}>就绪 <SortIcon direction={sortField === 'readyReplicas' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('age')}>存活 <SortIcon direction={sortField === 'age' ? sortDirection : undefined} /></div>
-            </div>
-            {sortedReplicaSets.map((rs) => (
-              <div className="table-row clickable" key={`${rs.namespace}-${rs.name}`} onClick={() => handleReplicaSetClick(rs.namespace, rs.name, selectedId)}>
-                <div>{rs.name}</div>
-                <div>{rs.namespace}</div>
-                <div>{rs.replicas}</div>
-                <div>{rs.readyReplicas}</div>
-                <div>{rs.age}</div>
+            {renderTableHead([
+              { label: '名称', field: 'name' },
+              { label: '命名空间', field: 'namespace' },
+              { label: '副本', field: 'replicas' },
+              { label: '就绪', field: 'readyReplicas' },
+              { label: '存活', field: 'age' },
+            ], true)}
+            {sortedReplicaSets.map((replicaSet) => (
+              <div className="table-row clickable" key={`${replicaSet.namespace}-${replicaSet.name}`} onClick={() => handleReplicaSetClick(replicaSet.namespace, replicaSet.name, selectedId)}>
+                <div>{replicaSet.name}</div>
+                <div>{replicaSet.namespace}</div>
+                <div>{replicaSet.replicas}</div>
+                <div>{replicaSet.readyReplicas}</div>
+                <div>{replicaSet.age}</div>
+                {renderActions([
+                  {
+                    key: 'scale',
+                    label: 'Scale',
+                    className: 'scale-btn',
+                    onClick: () => handleScaleWorkload('ReplicaSet', replicaSet.namespace, replicaSet.name, replicaSet.replicas),
+                    title: '扩缩容',
+                  },
+                  {
+                    key: 'yaml',
+                    label: 'YAML',
+                    className: 'yaml-btn',
+                    onClick: () => openYamlEditor('edit', 'ReplicaSet', replicaSet.namespace, replicaSet.name),
+                    title: '编辑 YAML',
+                  },
+                  {
+                    key: 'delete',
+                    label: 'Delete',
+                    className: 'delete-btn',
+                    onClick: () => handleDeleteResource('ReplicaSet', replicaSet.namespace, replicaSet.name),
+                    title: '删除 ReplicaSet',
+                  },
+                ])}
               </div>
             ))}
-            {sortedReplicaSets.length === 0 && <div className="table-empty">暂无ReplicaSet数据</div>}
+            {sortedReplicaSets.length === 0 && <div className="table-empty">暂无 ReplicaSet 数据</div>}
           </div>
         )
+      }
 
-      case 'jobs':
+      case 'jobs': {
         const sortedJobs = getVisibleNamespacedData(jobs)
         return (
           <div className="table">
-            <div className="table-row table-head">
-              <div onClick={handleHeaderClick('name')}>名称 <SortIcon direction={sortField === 'name' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('namespace')}>命名空间 <SortIcon direction={sortField === 'namespace' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('completions')}>完成数 <SortIcon direction={sortField === 'completions' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('succeeded')}>成功 <SortIcon direction={sortField === 'succeeded' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('failed')}>失败 <SortIcon direction={sortField === 'failed' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('age')}>存活 <SortIcon direction={sortField === 'age' ? sortDirection : undefined} /></div>
-            </div>
+            {renderTableHead([
+              { label: '名称', field: 'name' },
+              { label: '命名空间', field: 'namespace' },
+              { label: '完成数', field: 'completions' },
+              { label: '成功', field: 'succeeded' },
+              { label: '失败', field: 'failed' },
+              { label: '存活', field: 'age' },
+            ], true)}
             {sortedJobs.map((job) => (
               <div className="table-row clickable" key={`${job.namespace}-${job.name}`} onClick={() => handleJobClick(job.namespace, job.name, selectedId)}>
                 <div>{job.name}</div>
@@ -487,193 +966,247 @@ const App = () => {
                 <div>{job.succeeded}</div>
                 <div className={`status ${job.failed > 0 ? 'warn' : 'ok'}`}>{job.failed}</div>
                 <div>{job.age}</div>
+                {renderActions([
+                  {
+                    key: 'yaml',
+                    label: 'YAML',
+                    className: 'yaml-btn',
+                    onClick: () => openYamlEditor('edit', 'Job', job.namespace, job.name),
+                    title: '编辑 YAML',
+                  },
+                  {
+                    key: 'delete',
+                    label: 'Delete',
+                    className: 'delete-btn',
+                    onClick: () => handleDeleteResource('Job', job.namespace, job.name),
+                    title: '删除 Job',
+                  },
+                ])}
               </div>
             ))}
-            {sortedJobs.length === 0 && <div className="table-empty">暂无Job数据</div>}
+            {sortedJobs.length === 0 && <div className="table-empty">暂无 Job 数据</div>}
           </div>
         )
+      }
 
-      case 'cronjobs':
+      case 'cronjobs': {
         const sortedCronJobs = getVisibleNamespacedData(cronJobs)
         return (
           <div className="table">
-            <div className="table-row table-head">
-              <div onClick={handleHeaderClick('name')}>名称 <SortIcon direction={sortField === 'name' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('namespace')}>命名空间 <SortIcon direction={sortField === 'namespace' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('schedule')}>调度 <SortIcon direction={sortField === 'schedule' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('suspend')}>暂停 <SortIcon direction={sortField === 'suspend' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('active')}>活跃 <SortIcon direction={sortField === 'active' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('lastSchedule')}>上次调度 <SortIcon direction={sortField === 'lastSchedule' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('age')}>存活 <SortIcon direction={sortField === 'age' ? sortDirection : undefined} /></div>
-            </div>
-            {sortedCronJobs.map((cj) => (
-              <div className="table-row clickable" key={`${cj.namespace}-${cj.name}`} onClick={() => handleCronJobClick(cj.namespace, cj.name, selectedId)}>
-                <div>{cj.name}</div>
-                <div>{cj.namespace}</div>
-                <div>{cj.schedule}</div>
-                <div>{cj.suspend ? '是' : '否'}</div>
-                <div>{cj.active}</div>
-                <div>{cj.lastSchedule}</div>
-                <div>{cj.age}</div>
+            {renderTableHead([
+              { label: '名称', field: 'name' },
+              { label: '命名空间', field: 'namespace' },
+              { label: '调度', field: 'schedule' },
+              { label: '暂停', field: 'suspend' },
+              { label: '活跃', field: 'active' },
+              { label: '上次调度', field: 'lastSchedule' },
+              { label: '存活', field: 'age' },
+            ], true)}
+            {sortedCronJobs.map((cronJob) => (
+              <div className="table-row clickable" key={`${cronJob.namespace}-${cronJob.name}`} onClick={() => handleCronJobClick(cronJob.namespace, cronJob.name, selectedId)}>
+                <div>{cronJob.name}</div>
+                <div>{cronJob.namespace}</div>
+                <div>{cronJob.schedule}</div>
+                <div>{cronJob.suspend ? '是' : '否'}</div>
+                <div>{cronJob.active}</div>
+                <div>{cronJob.lastSchedule}</div>
+                <div>{cronJob.age}</div>
+                {renderActions([
+                  {
+                    key: 'yaml',
+                    label: 'YAML',
+                    className: 'yaml-btn',
+                    onClick: () => openYamlEditor('edit', 'CronJob', cronJob.namespace, cronJob.name),
+                    title: '编辑 YAML',
+                  },
+                  {
+                    key: 'delete',
+                    label: 'Delete',
+                    className: 'delete-btn',
+                    onClick: () => handleDeleteResource('CronJob', cronJob.namespace, cronJob.name),
+                    title: '删除 CronJob',
+                  },
+                ])}
               </div>
             ))}
-            {sortedCronJobs.length === 0 && <div className="table-empty">暂无CronJob数据</div>}
+            {sortedCronJobs.length === 0 && <div className="table-empty">暂无 CronJob 数据</div>}
           </div>
         )
+      }
 
-      case 'services':
+      case 'services': {
         const sortedServices = getVisibleNamespacedData(services)
         return (
           <div className="table">
-            <div className="table-row table-head">
-              <div onClick={handleHeaderClick('name')}>名称 <SortIcon direction={sortField === 'name' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('namespace')}>命名空间 <SortIcon direction={sortField === 'namespace' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('type')}>类型 <SortIcon direction={sortField === 'type' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('clusterIP')}>Cluster IP <SortIcon direction={sortField === 'clusterIP' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('ports')}>端口 <SortIcon direction={sortField === 'ports' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('age')}>存活 <SortIcon direction={sortField === 'age' ? sortDirection : undefined} /></div>
-            </div>
-            {sortedServices.map((svc) => (
-              <div className="table-row clickable" key={`${svc.namespace}-${svc.name}`}>
-                <div>{svc.name}</div>
-                <div>{svc.namespace}</div>
-                <div>{svc.type}</div>
-                <div>{svc.clusterIP}</div>
-                <div>{svc.ports}</div>
-                <div>{svc.age}</div>
-                <div className="table-row-actions">
-                  <button
-                    className="action-btn yaml-btn"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      setIsYamlEditorOpen(true, 'view', { kind: 'Service', namespace: svc.namespace, name: svc.name })
-                    }}
-                    title="View YAML"
-                  >
-                    YAML
-                  </button>
-                </div>
+            {renderTableHead([
+              { label: '名称', field: 'name' },
+              { label: '命名空间', field: 'namespace' },
+              { label: '类型', field: 'type' },
+              { label: 'Cluster IP', field: 'clusterIP' },
+              { label: '端口', field: 'ports' },
+              { label: '存活', field: 'age' },
+            ], true)}
+            {sortedServices.map((service) => (
+              <div className="table-row" key={`${service.namespace}-${service.name}`}>
+                <div>{service.name}</div>
+                <div>{service.namespace}</div>
+                <div>{service.type}</div>
+                <div>{service.clusterIP}</div>
+                <div>{service.ports}</div>
+                <div>{service.age}</div>
+                {renderActions([
+                  {
+                    key: 'yaml',
+                    label: 'YAML',
+                    className: 'yaml-btn',
+                    onClick: () => openYamlEditor('edit', 'Service', service.namespace, service.name),
+                    title: '编辑 YAML',
+                  },
+                  {
+                    key: 'delete',
+                    label: 'Delete',
+                    className: 'delete-btn',
+                    onClick: () => handleDeleteResource('Service', service.namespace, service.name),
+                    title: '删除 Service',
+                  },
+                ])}
               </div>
             ))}
-            {sortedServices.length === 0 && <div className="table-empty">暂无Service数据</div>}
+            {sortedServices.length === 0 && <div className="table-empty">暂无 Service 数据</div>}
           </div>
         )
+      }
 
-      case 'configmaps':
+      case 'configmaps': {
         const sortedConfigMaps = getVisibleNamespacedData(configMaps)
         return (
           <div className="table">
-            <div className="table-row table-head">
-              <div onClick={handleHeaderClick('name')}>名称 <SortIcon direction={sortField === 'name' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('namespace')}>命名空间 <SortIcon direction={sortField === 'namespace' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('age')}>存活 <SortIcon direction={sortField === 'age' ? sortDirection : undefined} /></div>
-            </div>
-            {sortedConfigMaps.map((cm) => (
-              <div className="table-row clickable" key={`${cm.namespace}-${cm.name}`}>
-                <div>{cm.name}</div>
-                <div>{cm.namespace}</div>
-                <div>{cm.age}</div>
-                <div className="table-row-actions">
-                  <button
-                    className="action-btn yaml-btn"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      setIsYamlEditorOpen(true, 'view', { kind: 'ConfigMap', namespace: cm.namespace, name: cm.name })
-                    }}
-                    title="View YAML"
-                  >
-                    YAML
-                  </button>
-                </div>
+            {renderTableHead([
+              { label: '名称', field: 'name' },
+              { label: '命名空间', field: 'namespace' },
+              { label: '存活', field: 'age' },
+            ], true)}
+            {sortedConfigMaps.map((configMap) => (
+              <div className="table-row" key={`${configMap.namespace}-${configMap.name}`}>
+                <div>{configMap.name}</div>
+                <div>{configMap.namespace}</div>
+                <div>{configMap.age}</div>
+                {renderActions([
+                  {
+                    key: 'yaml',
+                    label: 'YAML',
+                    className: 'yaml-btn',
+                    onClick: () => openYamlEditor('edit', 'ConfigMap', configMap.namespace, configMap.name),
+                    title: '编辑 YAML',
+                  },
+                  {
+                    key: 'delete',
+                    label: 'Delete',
+                    className: 'delete-btn',
+                    onClick: () => handleDeleteResource('ConfigMap', configMap.namespace, configMap.name),
+                    title: '删除 ConfigMap',
+                  },
+                ])}
               </div>
             ))}
-            {sortedConfigMaps.length === 0 && <div className="table-empty">暂无ConfigMap数据</div>}
+            {sortedConfigMaps.length === 0 && <div className="table-empty">暂无 ConfigMap 数据</div>}
           </div>
         )
+      }
 
-      case 'secrets':
+      case 'secrets': {
         const sortedSecrets = getVisibleNamespacedData(secrets)
         return (
           <div className="table">
-            <div className="table-row table-head">
-              <div onClick={handleHeaderClick('name')}>名称 <SortIcon direction={sortField === 'name' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('namespace')}>命名空间 <SortIcon direction={sortField === 'namespace' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('type')}>类型 <SortIcon direction={sortField === 'type' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('age')}>存活 <SortIcon direction={sortField === 'age' ? sortDirection : undefined} /></div>
-            </div>
+            {renderTableHead([
+              { label: '名称', field: 'name' },
+              { label: '命名空间', field: 'namespace' },
+              { label: '类型', field: 'type' },
+              { label: '存活', field: 'age' },
+            ], true)}
             {sortedSecrets.map((secret) => (
-              <div className="table-row clickable" key={`${secret.namespace}-${secret.name}`}>
+              <div className="table-row" key={`${secret.namespace}-${secret.name}`}>
                 <div>{secret.name}</div>
                 <div>{secret.namespace}</div>
                 <div>{secret.type}</div>
                 <div>{secret.age}</div>
-                <div className="table-row-actions">
-                  <button
-                    className="action-btn yaml-btn"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      setIsYamlEditorOpen(true, 'view', { kind: 'Secret', namespace: secret.namespace, name: secret.name })
-                    }}
-                    title="View YAML"
-                  >
-                    YAML
-                  </button>
-                </div>
+                {renderActions([
+                  {
+                    key: 'yaml',
+                    label: 'YAML',
+                    className: 'yaml-btn',
+                    onClick: () => openYamlEditor('edit', 'Secret', secret.namespace, secret.name),
+                    title: '编辑 YAML',
+                  },
+                  {
+                    key: 'delete',
+                    label: 'Delete',
+                    className: 'delete-btn',
+                    onClick: () => handleDeleteResource('Secret', secret.namespace, secret.name),
+                    title: '删除 Secret',
+                  },
+                ])}
               </div>
             ))}
-            {sortedSecrets.length === 0 && <div className="table-empty">暂无Secret数据</div>}
+            {sortedSecrets.length === 0 && <div className="table-empty">暂无 Secret 数据</div>}
           </div>
         )
+      }
 
-      case 'ingresses':
+      case 'ingresses': {
         const sortedIngresses = getVisibleNamespacedData(ingresses)
         return (
           <div className="table">
-            <div className="table-row table-head">
-              <div onClick={handleHeaderClick('name')}>名称 <SortIcon direction={sortField === 'name' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('namespace')}>命名空间 <SortIcon direction={sortField === 'namespace' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('hosts')}>主机 <SortIcon direction={sortField === 'hosts' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('address')}>地址 <SortIcon direction={sortField === 'address' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('age')}>存活 <SortIcon direction={sortField === 'age' ? sortDirection : undefined} /></div>
-            </div>
-            {sortedIngresses.map((ing) => (
-              <div className="table-row clickable" key={`${ing.namespace}-${ing.name}`}>
-                <div>{ing.name}</div>
-                <div>{ing.namespace}</div>
-                <div>{ing.hosts}</div>
-                <div>{ing.address || '-'}</div>
-                <div>{ing.age}</div>
-                <div className="table-row-actions">
-                  <button
-                    className="action-btn yaml-btn"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      setIsYamlEditorOpen(true, 'view', { kind: 'Ingress', namespace: ing.namespace, name: ing.name })
-                    }}
-                    title="View YAML"
-                  >
-                    YAML
-                  </button>
-                </div>
+            {renderTableHead([
+              { label: '名称', field: 'name' },
+              { label: '命名空间', field: 'namespace' },
+              { label: '主机', field: 'hosts' },
+              { label: '地址', field: 'address' },
+              { label: '存活', field: 'age' },
+            ], true)}
+            {sortedIngresses.map((ingress) => (
+              <div className="table-row" key={`${ingress.namespace}-${ingress.name}`}>
+                <div>{ingress.name}</div>
+                <div>{ingress.namespace}</div>
+                <div>{ingress.hosts}</div>
+                <div>{ingress.address || '-'}</div>
+                <div>{ingress.age}</div>
+                {renderActions([
+                  {
+                    key: 'yaml',
+                    label: 'YAML',
+                    className: 'yaml-btn',
+                    onClick: () => openYamlEditor('edit', 'Ingress', ingress.namespace, ingress.name),
+                    title: '编辑 YAML',
+                  },
+                  {
+                    key: 'delete',
+                    label: 'Delete',
+                    className: 'delete-btn',
+                    onClick: () => handleDeleteResource('Ingress', ingress.namespace, ingress.name),
+                    title: '删除 Ingress',
+                  },
+                ])}
               </div>
             ))}
-            {sortedIngresses.length === 0 && <div className="table-empty">暂无Ingress数据</div>}
+            {sortedIngresses.length === 0 && <div className="table-empty">暂无 Ingress 数据</div>}
           </div>
         )
+      }
 
-      case 'persistentvolumes':
+      case 'persistentvolumes': {
         const sortedPVs = getVisibleData(persistentVolumes)
         return (
           <div className="table">
-            <div className="table-row table-head">
-              <div onClick={handleHeaderClick('name')}>名称 <SortIcon direction={sortField === 'name' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('capacity')}>容量 <SortIcon direction={sortField === 'capacity' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('accessModes')}>访问模式 <SortIcon direction={sortField === 'accessModes' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('reclaimPolicy')}>回收策略 <SortIcon direction={sortField === 'reclaimPolicy' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('status')}>状态 <SortIcon direction={sortField === 'status' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('storageClass')}>StorageClass <SortIcon direction={sortField === 'storageClass' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('age')}>存活 <SortIcon direction={sortField === 'age' ? sortDirection : undefined} /></div>
-            </div>
+            {renderTableHead([
+              { label: '名称', field: 'name' },
+              { label: '容量', field: 'capacity' },
+              { label: '访问模式', field: 'accessModes' },
+              { label: '回收策略', field: 'reclaimPolicy' },
+              { label: '状态', field: 'status' },
+              { label: 'StorageClass', field: 'storageClass' },
+              { label: '存活', field: 'age' },
+            ], true)}
             {sortedPVs.map((pv) => (
               <div className="table-row" key={pv.name}>
                 <div>{pv.name}</div>
@@ -683,25 +1216,42 @@ const App = () => {
                 <div>{pv.status}</div>
                 <div>{pv.storageClass || '-'}</div>
                 <div>{pv.age}</div>
+                {renderActions([
+                  {
+                    key: 'yaml',
+                    label: 'YAML',
+                    className: 'yaml-btn',
+                    onClick: () => openYamlEditor('view', 'PersistentVolume', '', pv.name),
+                    title: '查看 YAML',
+                  },
+                  {
+                    key: 'delete',
+                    label: 'Delete',
+                    className: 'delete-btn',
+                    onClick: () => handleDeleteResource('PersistentVolume', '', pv.name),
+                    title: '删除 PV',
+                  },
+                ])}
               </div>
             ))}
-            {sortedPVs.length === 0 && <div className="table-empty">暂无PersistentVolume数据</div>}
+            {sortedPVs.length === 0 && <div className="table-empty">暂无 PersistentVolume 数据</div>}
           </div>
         )
+      }
 
-      case 'persistentvolumeclaims':
+      case 'persistentvolumeclaims': {
         const sortedPVCs = getVisibleNamespacedData(persistentVolumeClaims)
         return (
           <div className="table">
-            <div className="table-row table-head">
-              <div onClick={handleHeaderClick('name')}>名称 <SortIcon direction={sortField === 'name' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('namespace')}>命名空间 <SortIcon direction={sortField === 'namespace' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('status')}>状态 <SortIcon direction={sortField === 'status' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('capacity')}>容量 <SortIcon direction={sortField === 'capacity' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('accessModes')}>访问模式 <SortIcon direction={sortField === 'accessModes' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('storageClass')}>StorageClass <SortIcon direction={sortField === 'storageClass' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('age')}>存活 <SortIcon direction={sortField === 'age' ? sortDirection : undefined} /></div>
-            </div>
+            {renderTableHead([
+              { label: '名称', field: 'name' },
+              { label: '命名空间', field: 'namespace' },
+              { label: '状态', field: 'status' },
+              { label: '容量', field: 'capacity' },
+              { label: '访问模式', field: 'accessModes' },
+              { label: 'StorageClass', field: 'storageClass' },
+              { label: '存活', field: 'age' },
+            ], true)}
             {sortedPVCs.map((pvc) => (
               <div className="table-row" key={`${pvc.namespace}-${pvc.name}`}>
                 <div>{pvc.name}</div>
@@ -711,160 +1261,237 @@ const App = () => {
                 <div>{pvc.accessModes}</div>
                 <div>{pvc.storageClass || '-'}</div>
                 <div>{pvc.age}</div>
+                {renderActions([
+                  {
+                    key: 'yaml',
+                    label: 'YAML',
+                    className: 'yaml-btn',
+                    onClick: () => openYamlEditor('edit', 'PersistentVolumeClaim', pvc.namespace, pvc.name),
+                    title: '编辑 YAML',
+                  },
+                  {
+                    key: 'delete',
+                    label: 'Delete',
+                    className: 'delete-btn',
+                    onClick: () => handleDeleteResource('PersistentVolumeClaim', pvc.namespace, pvc.name),
+                    title: '删除 PVC',
+                  },
+                ])}
               </div>
             ))}
-            {sortedPVCs.length === 0 && <div className="table-empty">暂无PersistentVolumeClaim数据</div>}
+            {sortedPVCs.length === 0 && <div className="table-empty">暂无 PersistentVolumeClaim 数据</div>}
           </div>
         )
+      }
 
-      case 'storageclasses':
-        const sortedSCs = getVisibleData(storageClasses)
+      case 'storageclasses': {
+        const sortedStorageClasses = getVisibleData(storageClasses)
         return (
           <div className="table">
-            <div className="table-row table-head">
-              <div onClick={handleHeaderClick('name')}>名称 <SortIcon direction={sortField === 'name' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('provisioner')}>Provisioner <SortIcon direction={sortField === 'provisioner' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('reclaimPolicy')}>回收策略 <SortIcon direction={sortField === 'reclaimPolicy' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('volumeBindingMode')}>绑定模式 <SortIcon direction={sortField === 'volumeBindingMode' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('age')}>存活 <SortIcon direction={sortField === 'age' ? sortDirection : undefined} /></div>
-            </div>
-            {sortedSCs.map((sc) => (
-              <div className="table-row" key={sc.name}>
-                <div>{sc.name}</div>
-                <div>{sc.provisioner}</div>
-                <div>{sc.reclaimPolicy}</div>
-                <div>{sc.volumeBindingMode}</div>
-                <div>{sc.age}</div>
+            {renderTableHead([
+              { label: '名称', field: 'name' },
+              { label: 'Provisioner', field: 'provisioner' },
+              { label: '回收策略', field: 'reclaimPolicy' },
+              { label: '绑定模式', field: 'volumeBindingMode' },
+              { label: '存活', field: 'age' },
+            ], true)}
+            {sortedStorageClasses.map((storageClass) => (
+              <div className="table-row" key={storageClass.name}>
+                <div>{storageClass.name}</div>
+                <div>{storageClass.provisioner}</div>
+                <div>{storageClass.reclaimPolicy}</div>
+                <div>{storageClass.volumeBindingMode}</div>
+                <div>{storageClass.age}</div>
+                {renderActions([
+                  {
+                    key: 'yaml',
+                    label: 'YAML',
+                    className: 'yaml-btn',
+                    onClick: () => openYamlEditor('view', 'StorageClass', '', storageClass.name),
+                    title: '查看 YAML',
+                  },
+                ])}
               </div>
             ))}
-            {sortedSCs.length === 0 && <div className="table-empty">暂无StorageClass数据</div>}
+            {sortedStorageClasses.length === 0 && <div className="table-empty">暂无 StorageClass 数据</div>}
           </div>
         )
+      }
 
-      case 'serviceaccounts':
-        const sortedSAs = getVisibleNamespacedData(serviceAccounts)
+      case 'serviceaccounts': {
+        const sortedServiceAccounts = getVisibleNamespacedData(serviceAccounts)
         return (
           <div className="table">
-            <div className="table-row table-head">
-              <div onClick={handleHeaderClick('name')}>名称 <SortIcon direction={sortField === 'name' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('namespace')}>命名空间 <SortIcon direction={sortField === 'namespace' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('secrets')}>Secrets <SortIcon direction={sortField === 'secrets' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('age')}>存活 <SortIcon direction={sortField === 'age' ? sortDirection : undefined} /></div>
-            </div>
-            {sortedSAs.map((sa) => (
-              <div className="table-row" key={`${sa.namespace}-${sa.name}`}>
-                <div>{sa.name}</div>
-                <div>{sa.namespace}</div>
-                <div>{sa.secrets}</div>
-                <div>{sa.age}</div>
+            {renderTableHead([
+              { label: '名称', field: 'name' },
+              { label: '命名空间', field: 'namespace' },
+              { label: 'Secrets', field: 'secrets' },
+              { label: '存活', field: 'age' },
+            ], true)}
+            {sortedServiceAccounts.map((serviceAccount) => (
+              <div className="table-row" key={`${serviceAccount.namespace}-${serviceAccount.name}`}>
+                <div>{serviceAccount.name}</div>
+                <div>{serviceAccount.namespace}</div>
+                <div>{serviceAccount.secrets}</div>
+                <div>{serviceAccount.age}</div>
+                {renderActions([
+                  {
+                    key: 'yaml',
+                    label: 'YAML',
+                    className: 'yaml-btn',
+                    onClick: () => openYamlEditor('edit', 'ServiceAccount', serviceAccount.namespace, serviceAccount.name),
+                    title: '编辑 YAML',
+                  },
+                ])}
               </div>
             ))}
-            {sortedSAs.length === 0 && <div className="table-empty">暂无ServiceAccount数据</div>}
+            {sortedServiceAccounts.length === 0 && <div className="table-empty">暂无 ServiceAccount 数据</div>}
           </div>
         )
+      }
 
-      case 'roles':
+      case 'roles': {
         const sortedRoles = getVisibleNamespacedData(roles)
         return (
           <div className="table">
-            <div className="table-row table-head">
-              <div onClick={handleHeaderClick('name')}>名称 <SortIcon direction={sortField === 'name' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('namespace')}>命名空间 <SortIcon direction={sortField === 'namespace' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('rules')}>规则数 <SortIcon direction={sortField === 'rules' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('age')}>存活 <SortIcon direction={sortField === 'age' ? sortDirection : undefined} /></div>
-            </div>
+            {renderTableHead([
+              { label: '名称', field: 'name' },
+              { label: '命名空间', field: 'namespace' },
+              { label: '规则数', field: 'rules' },
+              { label: '存活', field: 'age' },
+            ], true)}
             {sortedRoles.map((role) => (
               <div className="table-row" key={`${role.namespace}-${role.name}`}>
                 <div>{role.name}</div>
                 <div>{role.namespace}</div>
                 <div>{role.rules}</div>
                 <div>{role.age}</div>
+                {renderActions([
+                  {
+                    key: 'yaml',
+                    label: 'YAML',
+                    className: 'yaml-btn',
+                    onClick: () => openYamlEditor('edit', 'Role', role.namespace, role.name),
+                    title: '编辑 YAML',
+                  },
+                ])}
               </div>
             ))}
-            {sortedRoles.length === 0 && <div className="table-empty">暂无Role数据</div>}
+            {sortedRoles.length === 0 && <div className="table-empty">暂无 Role 数据</div>}
           </div>
         )
+      }
 
-      case 'rolebindings':
-        const sortedRBs = getVisibleNamespacedData(roleBindings)
+      case 'rolebindings': {
+        const sortedRoleBindings = getVisibleNamespacedData(roleBindings)
         return (
           <div className="table">
-            <div className="table-row table-head">
-              <div onClick={handleHeaderClick('name')}>名称 <SortIcon direction={sortField === 'name' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('namespace')}>命名空间 <SortIcon direction={sortField === 'namespace' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('roleRef')}>RoleRef <SortIcon direction={sortField === 'roleRef' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('subjects')}>主体数 <SortIcon direction={sortField === 'subjects' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('age')}>存活 <SortIcon direction={sortField === 'age' ? sortDirection : undefined} /></div>
-            </div>
-            {sortedRBs.map((rb) => (
-              <div className="table-row" key={`${rb.namespace}-${rb.name}`}>
-                <div>{rb.name}</div>
-                <div>{rb.namespace}</div>
-                <div>{rb.roleRef}</div>
-                <div>{rb.subjects}</div>
-                <div>{rb.age}</div>
+            {renderTableHead([
+              { label: '名称', field: 'name' },
+              { label: '命名空间', field: 'namespace' },
+              { label: 'RoleRef', field: 'roleRef' },
+              { label: '主体数', field: 'subjects' },
+              { label: '存活', field: 'age' },
+            ], true)}
+            {sortedRoleBindings.map((roleBinding) => (
+              <div className="table-row" key={`${roleBinding.namespace}-${roleBinding.name}`}>
+                <div>{roleBinding.name}</div>
+                <div>{roleBinding.namespace}</div>
+                <div>{roleBinding.roleRef}</div>
+                <div>{roleBinding.subjects}</div>
+                <div>{roleBinding.age}</div>
+                {renderActions([
+                  {
+                    key: 'yaml',
+                    label: 'YAML',
+                    className: 'yaml-btn',
+                    onClick: () => openYamlEditor('edit', 'RoleBinding', roleBinding.namespace, roleBinding.name),
+                    title: '编辑 YAML',
+                  },
+                ])}
               </div>
             ))}
-            {sortedRBs.length === 0 && <div className="table-empty">暂无RoleBinding数据</div>}
+            {sortedRoleBindings.length === 0 && <div className="table-empty">暂无 RoleBinding 数据</div>}
           </div>
         )
+      }
 
-      case 'clusterroles':
-        const sortedCRs = getVisibleData(clusterRoles)
+      case 'clusterroles': {
+        const sortedClusterRoles = getVisibleData(clusterRoles)
         return (
           <div className="table">
-            <div className="table-row table-head">
-              <div onClick={handleHeaderClick('name')}>名称 <SortIcon direction={sortField === 'name' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('rules')}>规则数 <SortIcon direction={sortField === 'rules' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('age')}>存活 <SortIcon direction={sortField === 'age' ? sortDirection : undefined} /></div>
-            </div>
-            {sortedCRs.map((cr) => (
-              <div className="table-row" key={cr.name}>
-                <div>{cr.name}</div>
-                <div>{cr.rules}</div>
-                <div>{cr.age}</div>
+            {renderTableHead([
+              { label: '名称', field: 'name' },
+              { label: '规则数', field: 'rules' },
+              { label: '存活', field: 'age' },
+            ], true)}
+            {sortedClusterRoles.map((clusterRole) => (
+              <div className="table-row" key={clusterRole.name}>
+                <div>{clusterRole.name}</div>
+                <div>{clusterRole.rules}</div>
+                <div>{clusterRole.age}</div>
+                {renderActions([
+                  {
+                    key: 'yaml',
+                    label: 'YAML',
+                    className: 'yaml-btn',
+                    onClick: () => openYamlEditor('view', 'ClusterRole', '', clusterRole.name),
+                    title: '查看 YAML',
+                  },
+                ])}
               </div>
             ))}
-            {sortedCRs.length === 0 && <div className="table-empty">暂无ClusterRole数据</div>}
+            {sortedClusterRoles.length === 0 && <div className="table-empty">暂无 ClusterRole 数据</div>}
           </div>
         )
+      }
 
-      case 'clusterrolebindings':
-        const sortedCRBs = getVisibleData(clusterRoleBindings)
+      case 'clusterrolebindings': {
+        const sortedClusterRoleBindings = getVisibleData(clusterRoleBindings)
         return (
           <div className="table">
-            <div className="table-row table-head">
-              <div onClick={handleHeaderClick('name')}>名称 <SortIcon direction={sortField === 'name' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('roleRef')}>RoleRef <SortIcon direction={sortField === 'roleRef' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('subjects')}>主体数 <SortIcon direction={sortField === 'subjects' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('age')}>存活 <SortIcon direction={sortField === 'age' ? sortDirection : undefined} /></div>
-            </div>
-            {sortedCRBs.map((crb) => (
-              <div className="table-row" key={crb.name}>
-                <div>{crb.name}</div>
-                <div>{crb.roleRef}</div>
-                <div>{crb.subjects}</div>
-                <div>{crb.age}</div>
+            {renderTableHead([
+              { label: '名称', field: 'name' },
+              { label: 'RoleRef', field: 'roleRef' },
+              { label: '主体数', field: 'subjects' },
+              { label: '存活', field: 'age' },
+            ], true)}
+            {sortedClusterRoleBindings.map((clusterRoleBinding) => (
+              <div className="table-row" key={clusterRoleBinding.name}>
+                <div>{clusterRoleBinding.name}</div>
+                <div>{clusterRoleBinding.roleRef}</div>
+                <div>{clusterRoleBinding.subjects}</div>
+                <div>{clusterRoleBinding.age}</div>
+                {renderActions([
+                  {
+                    key: 'yaml',
+                    label: 'YAML',
+                    className: 'yaml-btn',
+                    onClick: () => openYamlEditor('view', 'ClusterRoleBinding', '', clusterRoleBinding.name),
+                    title: '查看 YAML',
+                  },
+                ])}
               </div>
             ))}
-            {sortedCRBs.length === 0 && <div className="table-empty">暂无ClusterRoleBinding数据</div>}
+            {sortedClusterRoleBindings.length === 0 && <div className="table-empty">暂无 ClusterRoleBinding 数据</div>}
           </div>
         )
+      }
 
-      case 'horizontalpodautoscalers':
+      case 'horizontalpodautoscalers': {
         const sortedHPAs = getVisibleNamespacedData(hpas)
         return (
           <div className="table">
-            <div className="table-row table-head">
-              <div onClick={handleHeaderClick('name')}>名称 <SortIcon direction={sortField === 'name' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('namespace')}>命名空间 <SortIcon direction={sortField === 'namespace' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('reference')}>目标资源 <SortIcon direction={sortField === 'reference' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('minPods')}>最小副本 <SortIcon direction={sortField === 'minPods' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('maxPods')}>最大副本 <SortIcon direction={sortField === 'maxPods' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('currentReplicas')}>当前副本 <SortIcon direction={sortField === 'currentReplicas' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('desiredReplicas')}>期望副本 <SortIcon direction={sortField === 'desiredReplicas' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('age')}>存活 <SortIcon direction={sortField === 'age' ? sortDirection : undefined} /></div>
-            </div>
+            {renderTableHead([
+              { label: '名称', field: 'name' },
+              { label: '命名空间', field: 'namespace' },
+              { label: '目标资源', field: 'reference' },
+              { label: '最小副本', field: 'minPods' },
+              { label: '最大副本', field: 'maxPods' },
+              { label: '当前副本', field: 'currentReplicas' },
+              { label: '期望副本', field: 'desiredReplicas' },
+              { label: '存活', field: 'age' },
+            ], true)}
             {sortedHPAs.map((hpa) => (
               <div className="table-row" key={`${hpa.namespace}-${hpa.name}`}>
                 <div>{hpa.name}</div>
@@ -875,39 +1502,59 @@ const App = () => {
                 <div>{hpa.currentReplicas}</div>
                 <div>{hpa.desiredReplicas}</div>
                 <div>{hpa.age}</div>
+                {renderActions([
+                  {
+                    key: 'yaml',
+                    label: 'YAML',
+                    className: 'yaml-btn',
+                    onClick: () => openYamlEditor('edit', 'HorizontalPodAutoscaler', hpa.namespace, hpa.name),
+                    title: '编辑 YAML',
+                  },
+                ])}
               </div>
             ))}
-            {sortedHPAs.length === 0 && <div className="table-empty">暂无HPA数据</div>}
+            {sortedHPAs.length === 0 && <div className="table-empty">暂无 HPA 数据</div>}
           </div>
         )
+      }
 
-      case 'events':
+      case 'events': {
         const sortedEvents = getVisibleNamespacedData(events)
         return (
           <div className="table">
-            <div className="table-row table-head">
-              <div onClick={handleHeaderClick('namespace')}>命名空间 <SortIcon direction={sortField === 'namespace' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('type')}>类型 <SortIcon direction={sortField === 'type' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('reason')}>原因 <SortIcon direction={sortField === 'reason' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('object')}>对象 <SortIcon direction={sortField === 'object' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('message')}>消息 <SortIcon direction={sortField === 'message' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('count')}>次数 <SortIcon direction={sortField === 'count' ? sortDirection : undefined} /></div>
-              <div onClick={handleHeaderClick('age')}>时间 <SortIcon direction={sortField === 'age' ? sortDirection : undefined} /></div>
-            </div>
-            {sortedEvents.map((ev) => (
-              <div className={`table-row${ev.type === 'Warning' ? ' row-warning' : ''}`} key={`${ev.namespace}-${ev.name}`}>
-                <div>{ev.namespace}</div>
-                <div>{ev.type}</div>
-                <div>{ev.reason}</div>
-                <div>{ev.object}</div>
-                <div className="cell-truncate" title={ev.message}>{ev.message}</div>
-                <div>{ev.count}</div>
-                <div>{ev.age}</div>
+            {renderTableHead([
+              { label: '命名空间', field: 'namespace' },
+              { label: '类型', field: 'type' },
+              { label: '原因', field: 'reason' },
+              { label: '对象', field: 'object' },
+              { label: '消息', field: 'message' },
+              { label: '次数', field: 'count' },
+              { label: '时间', field: 'age' },
+            ], true)}
+            {sortedEvents.map((event) => (
+              <div className={`table-row${event.type === 'Warning' ? ' row-warning' : ''}`} key={`${event.namespace}-${event.name}`}>
+                <div>{event.namespace}</div>
+                <div>{event.type}</div>
+                <div>{event.reason}</div>
+                <div>{event.object}</div>
+                <div className="cell-truncate" title={event.message}>{event.message}</div>
+                <div>{event.count}</div>
+                <div>{event.age}</div>
+                {renderActions([
+                  {
+                    key: 'yaml',
+                    label: 'YAML',
+                    className: 'yaml-btn',
+                    onClick: () => openYamlEditor('view', 'Event', event.namespace, event.name),
+                    title: '查看 YAML',
+                  },
+                ])}
               </div>
             ))}
-            {sortedEvents.length === 0 && <div className="table-empty">暂无Event数据</div>}
+            {sortedEvents.length === 0 && <div className="table-empty">暂无 Event 数据</div>}
           </div>
         )
+      }
 
       default:
         return null
@@ -937,10 +1584,10 @@ const App = () => {
                       className="group-input"
                       placeholder="分组名称"
                       value={newGroupName}
-                      onChange={(e) => setNewGroupName(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') handleConfirmAddGroup()
-                        if (e.key === 'Escape') handleCancelAddGroup()
+                      onChange={(event) => setNewGroupName(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') handleConfirmAddGroup()
+                        if (event.key === 'Escape') handleCancelAddGroup()
                       }}
                       autoFocus
                     />
@@ -957,27 +1604,29 @@ const App = () => {
                     {group.name}
                   </div>
                   <div className="sidebar-group-list" onDragOver={allowDragOver} onDrop={dropOnGroup(group.id)}>
-                    {group.items.map((cid) => {
-                      const ctx = ctxMap.get(cid)
-                      if (!ctx) return null
-                      const title = getDisplayName(ctx)
-                      const isActive = cid === selectedId
+                    {group.items.map((contextId) => {
+                      const context = ctxMap.get(contextId)
+                      if (!context) return null
+
+                      const title = getDisplayName(context)
+                      const isActive = contextId === selectedId
+
                       return (
                         <button
-                          key={cid}
+                          key={contextId}
                           className={`sidebar-item ${isActive ? 'active' : ''}`}
-                          onClick={() => selectContext(cid)}
+                          onClick={() => selectContext(contextId)}
                           draggable
-                          onDragStart={startDrag(cid, group.id)}
+                          onDragStart={startDrag(contextId, group.id)}
                           onDragOver={allowDragOver}
-                          onDrop={dropOnItem(cid, group.id)}
+                          onDrop={dropOnItem(contextId, group.id)}
                         >
                           <div className="sidebar-item-title">
-                            {editingContextId === cid ? (
+                            {editingContextId === contextId ? (
                               <input
                                 className="sidebar-item-input"
                                 value={editingName}
-                                onChange={(e) => setEditingName(e.target.value)}
+                                onChange={(event) => setEditingName(event.target.value)}
                                 onBlur={submitRename}
                                 onKeyDown={handleRenameKey}
                                 autoFocus
@@ -987,10 +1636,13 @@ const App = () => {
                             )}
                           </div>
                           <div className="sidebar-item-meta">
-                            {formatSource(ctx.source)} · {ctx.cluster}
+                            {formatSource(context.source)} · {context.cluster}
                             <span
                               className="edit-icon"
-                              onClick={(e) => { e.stopPropagation(); beginRename(cid, title) }}
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                beginRename(contextId, title)
+                              }}
                               title="重命名"
                             >
                               ✎
@@ -1007,27 +1659,29 @@ const App = () => {
                   未分组
                 </div>
                 <div className="sidebar-group-list" onDragOver={allowDragOver} onDrop={dropOnGroup('__ungrouped__')}>
-                  {contextPrefs.ungrouped.map((cid) => {
-                    const ctx = ctxMap.get(cid)
-                    if (!ctx) return null
-                    const title = getDisplayName(ctx)
-                    const isActive = cid === selectedId
+                  {contextPrefs.ungrouped.map((contextId) => {
+                    const context = ctxMap.get(contextId)
+                    if (!context) return null
+
+                    const title = getDisplayName(context)
+                    const isActive = contextId === selectedId
+
                     return (
                       <button
-                        key={cid}
+                        key={contextId}
                         className={`sidebar-item ${isActive ? 'active' : ''}`}
-                        onClick={() => selectContext(cid)}
+                        onClick={() => selectContext(contextId)}
                         draggable
-                        onDragStart={startDrag(cid, '__ungrouped__')}
+                        onDragStart={startDrag(contextId, '__ungrouped__')}
                         onDragOver={allowDragOver}
-                        onDrop={dropOnItem(cid, '__ungrouped__')}
+                        onDrop={dropOnItem(contextId, '__ungrouped__')}
                       >
                         <div className="sidebar-item-title">
-                          {editingContextId === cid ? (
+                          {editingContextId === contextId ? (
                             <input
                               className="sidebar-item-input"
                               value={editingName}
-                              onChange={(e) => setEditingName(e.target.value)}
+                              onChange={(event) => setEditingName(event.target.value)}
                               onBlur={submitRename}
                               onKeyDown={handleRenameKey}
                               autoFocus
@@ -1037,10 +1691,13 @@ const App = () => {
                           )}
                         </div>
                         <div className="sidebar-item-meta">
-                          {formatSource(ctx.source)} · {ctx.cluster}
+                          {formatSource(context.source)} · {context.cluster}
                           <span
                             className="edit-icon"
-                            onClick={(e) => { e.stopPropagation(); beginRename(cid, title) }}
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              beginRename(contextId, title)
+                            }}
                             title="重命名"
                           >
                             ✎
@@ -1053,7 +1710,7 @@ const App = () => {
               </div>
             </>
           ) : (
-            contexts.map((context: ContextRecord) => (
+            contexts.map((context) => (
               <button
                 key={context.id}
                 className={`sidebar-item ${context.id === selectedId ? 'active' : ''}`}
@@ -1068,34 +1725,42 @@ const App = () => {
           )}
         </div>
       </aside>
+
       <main className="main">
         <div className="main-header">
           <div>
-            <div className="main-title">
-              {selectedContext ? (contextPrefs?.customNames[selectedContext.id] ?? selectedContext.name) : '请选择集群'}
-            </div>
+            <div className="main-title">{selectedContextDisplayName}</div>
             {selectedContext && (
               <div className="main-subtitle">
                 {selectedContext.cluster} · {selectedContext.user}
+                <span className={`mode-badge ${isWebMode ? 'web' : 'desktop'}`}>
+                  {isWebMode ? 'Web / Local Only' : 'Desktop'}
+                </span>
               </div>
             )}
           </div>
-          <div className={`status-pill ${getStatusPillClass()}`}>
-            {status === 'loading' && '加载中'}
-            {status === 'ready' && '已连接'}
-            {status === 'error' && '连接失败'}
-            {status === 'idle' && '等待中'}
+          <div className="main-header-actions">
+            <div className={`status-pill ${getStatusPillClass()}`}>
+              {status === 'loading' && '加载中'}
+              {status === 'ready' && '已连接'}
+              {status === 'error' && '连接失败'}
+              {status === 'idle' && '等待中'}
+            </div>
+            <div className={`watch-status ${watchConnected ? 'connected' : 'disconnected'}`}>
+              {watchConnected ? 'Push Watch On' : 'Push Watch Off'}
+            </div>
+            <button
+              className={`terminal-btn ${showTerminal ? 'active' : ''}`}
+              onClick={toggleTerminal}
+              title="终端"
+            >
+              Terminal
+            </button>
           </div>
-          <button
-            className={`terminal-btn ${showTerminal ? 'active' : ''}`}
-            onClick={toggleTerminal}
-            title="终端"
-          >
-            Terminal
-          </button>
         </div>
 
         {error && <div className="error-banner">{error}</div>}
+        {notice && <div className={`notice-banner ${notice.tone}`}>{notice.message}</div>}
 
         {contexts.length === 0 ? (
           <EmptyState onAdd={handleAddClick} />
@@ -1115,34 +1780,86 @@ const App = () => {
                 ))}
               </div>
             </aside>
+
             <div className="content-main">
+              {selectedContext && (
+                <section className="overview-section">
+                  <div className="overview-grid">
+                    <ClusterCard
+                      context={selectedContext}
+                      isActive
+                      nodeCount={totalNodeCount}
+                      podCount={totalPodCount}
+                      status={selectedClusterCardStatus}
+                      onClick={() => selectContext(selectedContext.id)}
+                    />
+                    <SummaryCard
+                      label="Node 健康"
+                      value={`${readyNodeCount}/${totalNodeCount}`}
+                      detail={totalNodeCount === 0 ? '暂无节点数据' : `未就绪 ${Math.max(totalNodeCount - readyNodeCount, 0)} 个`}
+                      tone={readyNodeCount === totalNodeCount ? 'ready' : 'warn'}
+                    />
+                    <SummaryCard
+                      label="Pod 运行态"
+                      value={`${runningPodCount}/${totalPodCount}`}
+                      detail={`Pending ${pendingPodCount} · Failed ${failedPodCount}`}
+                      tone={failedPodCount > 0 ? 'error' : pendingPodCount > 0 ? 'warn' : 'ready'}
+                    />
+                    <SummaryCard
+                      label="Workload"
+                      value={workloadCount}
+                      detail={`${deployments.length} Deploy · ${daemonSets.length} DS · ${statefulSets.length} STS`}
+                    />
+                    <SummaryCard
+                      label="Warning Event"
+                      value={warningEventsCount}
+                      detail={watchConnected ? '实时 watch 刷新已启用' : '使用轮询刷新'}
+                      tone={warningEventsCount > 0 ? 'warn' : 'ready'}
+                    />
+                  </div>
+                </section>
+              )}
+
               <section className="resource-section compact">
+                <div className="resource-header">
+                  <div className="resource-title">{currentResourceLabel}</div>
+                  <div className="resource-header-meta">
+                    <div className="resource-count">{currentResourceCount} 项</div>
+                    {clusterHealth?.lastUpdated && (
+                      <div className="resource-meta-text">
+                        健康检查: {new Date(clusterHealth.lastUpdated).toLocaleTimeString()}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
                 <div className="resource-toolbar">
                   <div className="resource-filters">
                     <div className="namespace-filter">
                       <select
                         className="namespace-select"
                         value={selectedNamespace}
-                        onChange={(e) => setSelectedNamespaces(e.target.value ? [e.target.value] : [])}
+                        onChange={(event) => setSelectedNamespaces(event.target.value ? [event.target.value] : [])}
                       >
                         <option value="">全部命名空间</option>
-                        {namespaces.map((ns) => (
-                          <option key={ns.name} value={ns.name}>
-                            {ns.name}
+                        {namespaces.map((namespace) => (
+                          <option key={namespace.name} value={namespace.name}>
+                            {namespace.name}
                           </option>
                         ))}
                       </select>
                     </div>
                     <div className="search-input-wrap">
-                        <input
-                          type="text"
-                          className="search-input"
-                          placeholder="搜索资源名称或 namespace..."
-                          value={searchText}
-                          onChange={(e) => setSearchText(e.target.value)}
-                        />
+                      <input
+                        type="text"
+                        className="search-input"
+                        placeholder="搜索资源名称或 namespace..."
+                        value={searchText}
+                        onChange={(event) => setSearchText(event.target.value)}
+                      />
                     </div>
                   </div>
+
                   <div className="create-controls">
                     <button
                       className="create-btn"
@@ -1151,12 +1868,20 @@ const App = () => {
                     >
                       + Create
                     </button>
+                    <button
+                      className="create-btn secondary"
+                      onClick={() => openYamlEditor('create')}
+                      title="从 YAML 创建"
+                    >
+                      Apply YAML
+                    </button>
                   </div>
+
                   <div className="refresh-controls">
                     <select
                       className="refresh-interval-select"
                       value={refreshInterval}
-                      onChange={(e) => setRefreshInterval(Number(e.target.value))}
+                      onChange={(event) => setRefreshInterval(Number(event.target.value))}
                     >
                       <option value={0}>不刷新</option>
                       <option value={10}>10秒</option>
@@ -1179,6 +1904,7 @@ const App = () => {
                     )}
                   </div>
                 </div>
+
                 <div className="table-container">
                   {renderResourceTable()}
                 </div>
@@ -1187,15 +1913,17 @@ const App = () => {
           </div>
         )}
       </main>
+
       <NodeDetailModal
         node={selectedNode}
         loading={nodeDetailLoading}
         metrics={nodeMetrics}
         metricsLoading={nodeMetricsLoading}
-        pods={selectedNode ? pods.filter(p => p.nodeName === selectedNode.name) : []}
+        pods={selectedNode ? pods.filter((pod) => pod.nodeName === selectedNode.name) : []}
         events={selectedNode ? events.filter((event) => event.object === `Node/${selectedNode.name}`) : []}
         onClose={handleCloseNodeDetail}
       />
+
       <PodDetailModal
         pod={selectedPod}
         loading={podDetailLoading}
@@ -1206,16 +1934,31 @@ const App = () => {
         }}
         onClose={handleClosePodDetail}
       />
+
       <LogViewerModal
         pod={selectedPodForLogs}
         contextId={selectedId}
         onClose={handleClosePodLogs}
       />
+
+      <PodExecModal
+        pod={selectedPodForExec}
+        contextId={selectedId}
+        onClose={() => setSelectedPodForExec(null)}
+      />
+
+      <PortForwardModal
+        pod={selectedPodForPortForward}
+        contextId={selectedId}
+        onClose={() => setSelectedPodForPortForward(null)}
+      />
+
       <DeploymentDetailModal
         deploy={selectedDeployment}
         loading={deploymentDetailLoading}
         onClose={handleCloseDeploymentDetail}
       />
+
       <GenericDetailModal
         resource={selectedDaemonSet}
         loading={daemonSetDetailLoading}
@@ -1281,6 +2024,7 @@ const App = () => {
           </div>
         )}
       />
+
       <GenericDetailModal
         resource={selectedStatefulSet}
         loading={statefulSetDetailLoading}
@@ -1346,6 +2090,7 @@ const App = () => {
           </div>
         )}
       />
+
       <GenericDetailModal
         resource={selectedReplicaSet}
         loading={replicaSetDetailLoading}
@@ -1403,6 +2148,7 @@ const App = () => {
           </div>
         )}
       />
+
       <GenericDetailModal
         resource={selectedJob}
         loading={jobDetailLoading}
@@ -1480,6 +2226,7 @@ const App = () => {
           </div>
         )}
       />
+
       <GenericDetailModal
         resource={selectedCronJob}
         loading={cronJobDetailLoading}
@@ -1559,11 +2306,9 @@ const App = () => {
         onClose={() => setIsCreateModalOpen(false)}
         contextId={selectedId}
         selectedNamespaces={selectedNamespaces}
-        availableNamespaces={namespaces.map((ns) => ns.name)}
+        availableNamespaces={namespaces.map((namespace) => namespace.name)}
         onSuccess={() => {
-          loadNamespaces()
-          loadResources()
-          loadNewResources()
+          void refreshSelectedContext()
         }}
       />
 
@@ -1576,8 +2321,7 @@ const App = () => {
           namespace={yamlEditorResource.namespace}
           name={yamlEditorResource.name}
           onSuccess={() => {
-            loadResources()
-            loadNewResources()
+            void refreshSelectedContext()
           }}
           mode={yamlEditorMode}
         />

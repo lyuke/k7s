@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { ResourceType } from '../../../shared/types'
+import type { ResourceType } from '../../../shared/types'
 import { k8sApi } from '../api/provider'
 
 type SortDirection = 'asc' | 'desc'

@@ -8,7 +8,7 @@ import {
   NamespaceForm,
   IngressForm
 } from '../Forms'
-import {
+import type {
   DeploymentFormData,
   ServiceFormData,
   ConfigMapFormData,

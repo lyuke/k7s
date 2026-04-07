@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import {
+import type {
   AddContextsResult,
   ClusterHealth,
   ClusterRoleBindingInfo,
@@ -18,16 +18,27 @@ import {
   IngressFormData,
   IngressInfo,
   JobInfo,
+  K7sPushEvent,
+  KubernetesResourceKind,
   NamespaceInfo,
   NodeInfo,
   NodeMetrics,
+  PodExecData,
+  PodExecResult,
+  PodLogStreamRequest,
+  PodLogStreamResult,
   PersistentVolumeClaimInfo,
   PersistentVolumeInfo,
   PodInfo,
   ReplicaSetInfo,
+  RolloutResult,
+  RolloutWorkloadKind,
   RoleBindingInfo,
   RoleInfo,
+  PortForwardRequest,
+  PortForwardResult,
   ScaleResult,
+  ScaleableWorkloadKind,
   SecretFormData,
   SecretInfo,
   ServiceAccountInfo,
@@ -117,6 +128,18 @@ contextBridge.exposeInMainWorld('k7s', {
   // Log operations
   getPodLogs: (contextId: string, namespace: string, podName: string, containerName?: string, tailLines?: number): Promise<string> =>
     ipcRenderer.invoke('k7s:get-pod-logs', contextId, namespace, podName, containerName, tailLines),
+  startPodLogStream: (contextId: string, request: PodLogStreamRequest): Promise<PodLogStreamResult> =>
+    ipcRenderer.invoke('k7s:start-pod-log-stream', contextId, request),
+  stopPodLogStream: (streamId: string): Promise<{ success: boolean }> =>
+    ipcRenderer.invoke('k7s:stop-pod-log-stream', streamId),
+  startPodExec: (contextId: string, request: PodExecData): Promise<PodExecResult> =>
+    ipcRenderer.invoke('k7s:start-pod-exec', contextId, request),
+  stopPodExec: (sessionId: string): Promise<{ success: boolean }> =>
+    ipcRenderer.invoke('k7s:stop-pod-exec', sessionId),
+  startPortForward: (contextId: string, request: PortForwardRequest): Promise<PortForwardResult> =>
+    ipcRenderer.invoke('k7s:start-port-forward', contextId, request),
+  stopPortForward: (sessionId: string): Promise<{ success: boolean }> =>
+    ipcRenderer.invoke('k7s:stop-port-forward', sessionId),
 
   // Cluster health
   getClusterHealth: (contextId: string): Promise<ClusterHealth> =>
@@ -169,12 +192,30 @@ contextBridge.exposeInMainWorld('k7s', {
   // Update operations
   updateDeployment: (contextId: string, namespace: string, name: string, data: Partial<DeploymentFormData>): Promise<UpdateResult> =>
     ipcRenderer.invoke('k7s:update-deployment', contextId, namespace, name, data),
+  deleteResource: (contextId: string, kind: KubernetesResourceKind, namespace: string, name: string): Promise<DeleteResult> =>
+    ipcRenderer.invoke('k7s:delete-resource', contextId, kind, namespace, name),
+  scaleWorkload: (contextId: string, kind: ScaleableWorkloadKind, namespace: string, name: string, replicas: number): Promise<ScaleResult> =>
+    ipcRenderer.invoke('k7s:scale-workload', contextId, kind, namespace, name, replicas),
+  restartWorkload: (contextId: string, kind: RolloutWorkloadKind, namespace: string, name: string): Promise<RolloutResult> =>
+    ipcRenderer.invoke('k7s:restart-workload', contextId, kind, namespace, name),
+  rollbackWorkload: (contextId: string, kind: RolloutWorkloadKind, namespace: string, name: string): Promise<RolloutResult> =>
+    ipcRenderer.invoke('k7s:rollback-workload', contextId, kind, namespace, name),
 
   // YAML operations
   applyYaml: (contextId: string, yaml: string): Promise<CreateResult> =>
     ipcRenderer.invoke('k7s:apply-yaml', contextId, yaml),
   getResourceYaml: (contextId: string, kind: string, namespace: string, name: string): Promise<string> =>
-    ipcRenderer.invoke('k7s:get-resource-yaml', contextId, kind, namespace, name)
+    ipcRenderer.invoke('k7s:get-resource-yaml', contextId, kind, namespace, name),
+
+  // Watch / push events
+  subscribeWatch: (contextId: string): Promise<{ success: boolean }> =>
+    ipcRenderer.invoke('k7s:subscribe-watch', contextId),
+  unsubscribeWatch: (): Promise<{ success: boolean }> =>
+    ipcRenderer.invoke('k7s:unsubscribe-watch'),
+  onPushEvent: (callback: (event: K7sPushEvent) => void): void => {
+    ipcRenderer.removeAllListeners('k7s:push-event')
+    ipcRenderer.on('k7s:push-event', (_event, event) => callback(event as K7sPushEvent))
+  }
 })
 
 contextBridge.exposeInMainWorld('k8sTerm', {

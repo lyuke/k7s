@@ -1,9 +1,11 @@
-import express, { Request, Response } from 'express'
+/* node:coverage disable */
+import express from 'express'
+import type { Request, Response } from 'express'
 import { WebSocketServer, WebSocket } from 'ws'
-import { createServer } from 'http'
+import { createServer, IncomingMessage } from 'http'
 import path from 'path'
 import { fileURLToPath } from 'node:url'
-import fs from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
 import {
   addKubeconfigPath,
   applyYaml,
@@ -19,6 +21,7 @@ import {
   deleteJob,
   deleteNamespace,
   deletePod,
+  deleteResource,
   deleteReplicaSet,
   deleteStatefulSet,
   getClusterHealth,
@@ -51,16 +54,34 @@ import {
   listSecrets,
   listServices,
   listStatefulSets,
+  restartWorkload,
   scaleDeployment,
   scaleReplicaSet,
+  scaleWorkload,
   scaleStatefulSet,
   updateDeployment
 } from './kube'
+import {
+  cleanupRuntimeOwner,
+  rollbackWorkload,
+  subscribeToContextWatch,
+  unsubscribeFromContextWatch,
+} from './runtime'
+import type {
+  KubernetesResourceKind,
+  RolloutWorkloadKind,
+  ScaleableWorkloadKind,
+} from '../shared/types'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
-type WsHandler = (data: unknown, respond: (result: unknown) => void) => Promise<void>
+type ConnectionMeta = {
+  ownerId: string
+  ws: WebSocket
+}
+
+type WsHandler = (data: unknown, respond: (result: unknown) => void, meta: ConnectionMeta) => Promise<void>
 
 interface WsMessage {
   id: string
@@ -73,10 +94,16 @@ interface WsResponse {
   id: string
   result?: unknown
   error?: string
+  event?: string
+  data?: unknown
 }
 
 // Store active WebSocket connections
-const clients = new Map<WebSocket, boolean>()
+const clients = new Map<WebSocket, { ownerId: string }>()
+
+const sendEvent = (ws: WebSocket, event: string, data: unknown) => {
+  ws.send(JSON.stringify({ id: '', event, data }))
+}
 
 // Handlers map - mirrors IPC handlers but for WebSocket
 const handlers: Record<string, WsHandler> = {
@@ -258,6 +285,38 @@ const handlers: Record<string, WsHandler> = {
     const { contextId, namespace, name, formData } = data as { contextId: string; namespace: string; name: string; formData: unknown }
     respond(await updateDeployment(contextId, namespace, name, formData as Parameters<typeof updateDeployment>[3]))
   },
+  'k7s:delete-resource': async (data, respond) => {
+    const { contextId, kind, namespace, name } = data as { contextId: string; kind: KubernetesResourceKind; namespace: string; name: string }
+    respond(await deleteResource(contextId, kind, namespace, name))
+  },
+  'k7s:scale-workload': async (data, respond) => {
+    const { contextId, kind, namespace, name, replicas } = data as {
+      contextId: string
+      kind: ScaleableWorkloadKind
+      namespace: string
+      name: string
+      replicas: number
+    }
+    respond(await scaleWorkload(contextId, kind, namespace, name, replicas))
+  },
+  'k7s:restart-workload': async (data, respond) => {
+    const { contextId, kind, namespace, name } = data as {
+      contextId: string
+      kind: RolloutWorkloadKind
+      namespace: string
+      name: string
+    }
+    respond(await restartWorkload(contextId, kind, namespace, name))
+  },
+  'k7s:rollback-workload': async (data, respond) => {
+    const { contextId, kind, namespace, name } = data as {
+      contextId: string
+      kind: RolloutWorkloadKind
+      namespace: string
+      name: string
+    }
+    respond(await rollbackWorkload(contextId, kind, namespace, name))
+  },
   'k7s:apply-yaml': async (data, respond) => {
     const { contextId, yaml } = data as { contextId: string; yaml: string }
     respond(await applyYaml(contextId, yaml))
@@ -265,16 +324,39 @@ const handlers: Record<string, WsHandler> = {
   'k7s:get-resource-yaml': async (data, respond) => {
     const { contextId, kind, namespace, name } = data as { contextId: string; kind: string; namespace: string; name: string }
     respond(await getResourceYaml(contextId, kind, namespace, name))
+  },
+  'k7s:subscribe-watch': async (data, respond, meta) => {
+    const { contextId } = data as { contextId: string }
+    await subscribeToContextWatch(meta.ownerId, contextId, (event) => {
+      sendEvent(meta.ws, 'k7s:push-event', event)
+    })
+    respond({ success: true })
+  },
+  'k7s:unsubscribe-watch': async (_data, respond, meta) => {
+    await unsubscribeFromContextWatch(meta.ownerId)
+    respond({ success: true })
   }
 }
 
 const WS_MAX_MESSAGE_BYTES = 1 * 1024 * 1024 // 1 MB
 const WS_RATE_LIMIT_WINDOW_MS = 1000
 const WS_RATE_LIMIT_MAX = 30 // max 30 messages per second per connection
+const LOCAL_ADDRESSES = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
+
+const isLocalRequest = (request: IncomingMessage | Request) => {
+  const remoteAddress = 'socket' in request ? request.socket.remoteAddress : request.ip
+  return !!remoteAddress && LOCAL_ADDRESSES.has(remoteAddress)
+}
+
+const hasValidSessionCookie = (cookieHeader: string | undefined, token: string) => {
+  if (!cookieHeader) return false
+  return cookieHeader.split(';').some((cookie) => cookie.trim() === `k7s_session=${token}`)
+}
 
 function setupWebSocket(wss: WebSocketServer) {
   wss.on('connection', (ws: WebSocket) => {
-    clients.set(ws, true)
+    const ownerId = randomUUID()
+    clients.set(ws, { ownerId })
 
     let messageCount = 0
     let windowStart = Date.now()
@@ -313,7 +395,7 @@ function setupWebSocket(wss: WebSocketServer) {
           ws.send(JSON.stringify(response))
         }
 
-        await handler(msg.data || msg.params, respond)
+        await handler(msg.data || msg.params, respond, { ownerId, ws })
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error)
         ws.send(JSON.stringify({ id: 'error', error: errorMsg }))
@@ -321,10 +403,12 @@ function setupWebSocket(wss: WebSocketServer) {
     })
 
     ws.on('close', () => {
+      void cleanupRuntimeOwner(ownerId)
       clients.delete(ws)
     })
 
     ws.on('error', () => {
+      void cleanupRuntimeOwner(ownerId)
       clients.delete(ws)
     })
   })
@@ -332,6 +416,8 @@ function setupWebSocket(wss: WebSocketServer) {
 
 export function startWebServer(port: number = 3000): { server: ReturnType<typeof createServer>; wss: WebSocketServer } {
   const app = express()
+  const host = process.env.K7S_WEB_HOST || '127.0.0.1'
+  const sessionToken = randomUUID().replace(/-/g, '')
 
   // CORS: only allow same-origin and localhost (web mode is local-only)
   const allowedOrigins = new Set([
@@ -339,6 +425,12 @@ export function startWebServer(port: number = 3000): { server: ReturnType<typeof
     `http://127.0.0.1:${port}`
   ])
   app.use((req, res, next) => {
+    if (!isLocalRequest(req)) {
+      res.status(403).json({ error: 'Local access only' })
+      return
+    }
+
+    res.header('Set-Cookie', `k7s_session=${sessionToken}; HttpOnly; SameSite=Strict; Path=/`)
     const origin = req.headers.origin
     if (origin && allowedOrigins.has(origin)) {
       res.header('Access-Control-Allow-Origin', origin)
@@ -379,13 +471,44 @@ export function startWebServer(port: number = 3000): { server: ReturnType<typeof
   })
 
   const server = createServer(app)
-  const wss = new WebSocketServer({ server, path: '/ws' })
+  const wss = new WebSocketServer({ noServer: true })
 
   setupWebSocket(wss)
 
-  server.listen(port, () => {
-    console.log(`k7s web server running at http://localhost:${port}`)
-    console.log(`WebSocket server running at ws://localhost:${port}/ws`)
+  server.on('upgrade', (request, socket, head) => {
+    if (request.url !== '/ws') {
+      socket.write('HTTP/1.1 404 Not Found\r\n\r\n')
+      socket.destroy()
+      return
+    }
+
+    if (!isLocalRequest(request)) {
+      socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
+      socket.destroy()
+      return
+    }
+
+    if (!hasValidSessionCookie(request.headers.cookie, sessionToken)) {
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
+      socket.destroy()
+      return
+    }
+
+    const origin = request.headers.origin
+    if (origin && !allowedOrigins.has(origin)) {
+      socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
+      socket.destroy()
+      return
+    }
+
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit('connection', ws, request)
+    })
+  })
+
+  server.listen(port, host, () => {
+    console.log(`k7s web server running at http://${host}:${port}`)
+    console.log(`WebSocket server running at ws://${host}:${port}/ws`)
   })
 
   return { server, wss }
@@ -399,3 +522,4 @@ export function broadcastToClients(message: unknown) {
     }
   })
 }
+/* node:coverage enable */

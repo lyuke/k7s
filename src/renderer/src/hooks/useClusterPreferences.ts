@@ -1,6 +1,6 @@
 // Thin wrapper around preferencesStore for backward compatibility
 import { usePreferencesStore } from '../store'
-import { ContextRecord, ContextPrefs, ContextGroup } from '../../../shared/types'
+import type { ContextPrefs } from '../../../shared/types'
 
 export const useClusterPreferences = (
   _contextPrefs: ContextPrefs | null,

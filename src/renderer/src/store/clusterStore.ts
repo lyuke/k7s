@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import {
+import type {
   ClusterHealth,
   ClusterRoleBindingInfo,
   ClusterRoleInfo,
@@ -76,6 +76,7 @@ interface ClusterState {
   loadResources: (isAutoRefresh?: boolean) => Promise<void>
   loadClusterHealth: () => Promise<void>
   loadNewResources: () => Promise<void>
+  refreshAll: (isAutoRefresh?: boolean) => Promise<void>
   handleAdd: () => Promise<void>
   handleManualRefresh: () => void
   setIsRefreshing: (value: boolean) => void
@@ -277,6 +278,18 @@ export const useClusterStore = create<ClusterState>((set, get) => ({
     }
   },
 
+  refreshAll: async (isAutoRefresh = false) => {
+    const { selectedId, loadNamespaces, loadResources, loadClusterHealth, loadNewResources } = get()
+    if (!selectedId) return
+
+    await Promise.all([
+      loadNamespaces(),
+      loadResources(isAutoRefresh),
+      loadClusterHealth(),
+      loadNewResources(),
+    ])
+  },
+
   handleAdd: async () => {
     const { selectedId, contexts } = get()
     set({ error: '' })
@@ -294,9 +307,9 @@ export const useClusterStore = create<ClusterState>((set, get) => ({
   },
 
   handleManualRefresh: () => {
-    const { selectedId, loadResources } = get()
+    const { selectedId, refreshAll } = get()
     if (selectedId) {
-      loadResources(true)
+      void refreshAll(true)
     }
   },
 

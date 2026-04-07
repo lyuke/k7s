@@ -15,16 +15,22 @@ interface WsResponse {
   id: string
   result?: unknown
   error?: string
+  event?: string
+  data?: unknown
 }
 
-class WebSocketClient {
+export class WebSocketClient {
   private ws: WebSocket | null = null
-  private pendingRequests = new Map<RequestId, Handler>()
+  private pendingRequests = new Map<RequestId, {
+    resolve: (result: unknown) => void
+    reject: (error: Error) => void
+  }>()
   private reconnectAttempts = 0
   private maxReconnectAttempts = 5
   private reconnectDelay = 1000
   private messageId = 0
   private wsUrl: string
+  private eventHandlers = new Map<string, Set<Handler>>()
 
   constructor() {
     // Determine WebSocket URL based on current location
@@ -47,12 +53,18 @@ class WebSocketClient {
         this.ws.onmessage = (event) => {
           try {
             const response: WsResponse = JSON.parse(event.data)
-            const handler = this.pendingRequests.get(response.id)
-            if (handler) {
+            if (response.event) {
+              const handlers = this.eventHandlers.get(response.event)
+              handlers?.forEach((handler) => handler(response.data))
+              return
+            }
+
+            const pending = this.pendingRequests.get(response.id)
+            if (pending) {
               if (response.error) {
-                handler(Promise.reject(new Error(response.error)))
+                pending.reject(new Error(response.error))
               } else {
-                handler(response.result)
+                pending.resolve(response.result)
               }
               this.pendingRequests.delete(response.id)
             }
@@ -105,8 +117,9 @@ class WebSocketClient {
       const id = `msg_${++this.messageId}`
       const message: WsMessage = { id, method, data }
 
-      this.pendingRequests.set(id, (result) => {
-        resolve(result)
+      this.pendingRequests.set(id, {
+        resolve,
+        reject,
       })
 
       this.ws.send(JSON.stringify(message))
@@ -127,6 +140,20 @@ class WebSocketClient {
       this.ws = null
     }
     this.pendingRequests.clear()
+  }
+
+  onEvent(event: string, handler: Handler) {
+    const handlers = this.eventHandlers.get(event) ?? new Set<Handler>()
+    handlers.add(handler)
+    this.eventHandlers.set(event, handlers)
+    return () => {
+      const currentHandlers = this.eventHandlers.get(event)
+      if (!currentHandlers) return
+      currentHandlers.delete(handler)
+      if (currentHandlers.size === 0) {
+        this.eventHandlers.delete(event)
+      }
+    }
   }
 
   // API Methods
@@ -310,6 +337,22 @@ class WebSocketClient {
     return this.send('k7s:update-deployment', { contextId, namespace, name, formData: data }) as Promise<unknown>
   }
 
+  async deleteResource(contextId: string, kind: string, namespace: string, name: string) {
+    return this.send('k7s:delete-resource', { contextId, kind, namespace, name }) as Promise<unknown>
+  }
+
+  async scaleWorkload(contextId: string, kind: string, namespace: string, name: string, replicas: number) {
+    return this.send('k7s:scale-workload', { contextId, kind, namespace, name, replicas }) as Promise<unknown>
+  }
+
+  async restartWorkload(contextId: string, kind: string, namespace: string, name: string) {
+    return this.send('k7s:restart-workload', { contextId, kind, namespace, name }) as Promise<unknown>
+  }
+
+  async rollbackWorkload(contextId: string, kind: string, namespace: string, name: string) {
+    return this.send('k7s:rollback-workload', { contextId, kind, namespace, name }) as Promise<unknown>
+  }
+
   async applyYaml(contextId: string, yaml: string) {
     return this.send('k7s:apply-yaml', { contextId, yaml }) as Promise<unknown>
   }
@@ -361,6 +404,14 @@ class WebSocketClient {
 
   async listEvents(contextId: string, namespace?: string) {
     return this.send('k7s:list-events', { contextId, namespace }) as Promise<unknown[]>
+  }
+
+  async subscribeWatch(contextId: string) {
+    return this.send('k7s:subscribe-watch', { contextId }) as Promise<unknown>
+  }
+
+  async unsubscribeWatch() {
+    return this.send('k7s:unsubscribe-watch') as Promise<unknown>
   }
 }
 

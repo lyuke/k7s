@@ -1,6 +1,6 @@
 // Thin wrapper around uiStore for backward compatibility
 import { useUIStore } from '../store'
-import { NamespaceInfo } from '../../../shared/types'
+import type { NamespaceInfo } from '../../../shared/types'
 
 export const useUIState = (
   namespaces: NamespaceInfo[],

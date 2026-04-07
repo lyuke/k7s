@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { IngressFormData } from '../../../../shared/types'
+import type { IngressFormData } from '../../../../shared/types'
 
 interface IngressFormProps {
   namespace: string

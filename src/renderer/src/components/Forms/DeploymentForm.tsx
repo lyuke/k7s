@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { DeploymentFormData } from '../../../../shared/types'
+import type { DeploymentFormData } from '../../../../shared/types'
 import { KeyValueEditor } from './common/KeyValueEditor'
 
 interface DeploymentFormProps {
