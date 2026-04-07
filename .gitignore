@@ -6,3 +6,5 @@ build/
 release/
 *.log
 .collaborator
+.trae/
+.k7s-userdata/
