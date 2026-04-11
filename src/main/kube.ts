@@ -444,10 +444,10 @@ export const listNamespaces = async (contextId: string): Promise<NamespaceInfo[]
   const entry = getEntry(contextId)
   const api = createCoreV1Api(entry)
   try {
-    const res = (await api.listNamespace()) as unknown as { 
-      body?: { items?: Array<{ metadata?: { name?: string; creationTimestamp?: Date }; status?: { phase?: string } }> }
+    const res = (await api.listNamespace()) as unknown as {
+      body?: { items?: V1Namespace[] }; items?: V1Namespace[]
     }
-    const items = res.body?.items ?? []
+    const items = res.body?.items ?? res.items ?? []
     return items.map((ns) => ({
       name: ns.metadata?.name ?? '',
       status: ns.status?.phase ?? '',
