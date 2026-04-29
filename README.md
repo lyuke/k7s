@@ -9,6 +9,7 @@ A Kubernetes desktop GUI application for macOS, built with Electron + React + Ty
 - Support for multiple kubeconfig files
 - Context grouping and custom naming
 - Built-in terminal with direct kubectl access
+- CLI mode (`k7s cli`) for terminal-based cluster inspection (k9s-style lightweight view)
 - Dark theme UI inspired by VS Code
 
 ## Getting Started
@@ -47,10 +48,28 @@ npm run dist:mac:x64
 
 ## Usage
 
+### Desktop GUI
+
 1. **Launch the app** - Select or add a Kubernetes context from the sidebar
 2. **Browse resources** - Choose a resource type (Pods, Deployments, etc.) from the left panel
 3. **View details** - Click on any resource to see detailed information
 4. **Terminal** - Click the "Terminal" button in the header to open an integrated terminal with kubectl access
+
+### CLI Mode (k9s-like lightweight view)
+
+```bash
+# default: list pods in all namespaces
+k7s cli
+
+# list deployments in a namespace
+k7s cli -r deployments -n kube-system
+
+# live-refresh node view every 2 seconds
+k7s cli -r nodes --watch --refresh 2
+
+# specify context
+k7s cli --context minikube -r services
+```
 
 ## Architecture
 
