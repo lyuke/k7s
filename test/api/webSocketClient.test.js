@@ -104,10 +104,16 @@ describe('WebSocketClient', () => {
     await assert.rejects(connectPromise, /boom/)
   })
 
-  it('rejects requests when the socket is not connected', async () => {
+  it('rejects requests when the socket never opens', async () => {
+    globalThis.setTimeout = (callback) => {
+      callback()
+      return 1
+    }
+
     const client = new WebSocketClient()
 
-    await assert.rejects(client.listContexts(), /WebSocket not connected/)
+    await assert.rejects(client.listContexts(), /WebSocket connection timeout/)
+    assert.equal(client.pendingRequests.size, 0)
   })
 
   it('sends requests and resolves them when the server replies with a result', async () => {
@@ -186,16 +192,16 @@ describe('WebSocketClient', () => {
   })
 
   it('times out pending requests that never receive a reply', async () => {
-    globalThis.setTimeout = (callback) => {
-      callback()
-      return 1
-    }
-
     const client = new WebSocketClient()
     const connectPromise = client.connect()
     const socket = FakeWebSocket.instances[0]
     socket.emitOpen()
     await connectPromise
+
+    globalThis.setTimeout = (callback) => {
+      callback()
+      return 1
+    }
 
     await assert.rejects(client.listContexts(), /Request timeout/)
     assert.equal(client.pendingRequests.size, 0)
@@ -219,18 +225,18 @@ describe('WebSocketClient', () => {
   })
 
   it('attempts to reconnect with exponential backoff when the connection closes', async () => {
+    const client = new WebSocketClient()
+    const connectPromise = client.connect()
+    const socket = FakeWebSocket.instances[0]
+    socket.emitOpen()
+    await connectPromise
+
     const recordedDelays = []
     globalThis.setTimeout = (callback, delay) => {
       recordedDelays.push(delay)
       callback()
       return 1
     }
-
-    const client = new WebSocketClient()
-    const connectPromise = client.connect()
-    const socket = FakeWebSocket.instances[0]
-    socket.emitOpen()
-    await connectPromise
 
     let reconnectCalled = 0
     client.connect = async () => {

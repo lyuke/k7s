@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useCallback, useEffect, useState } from 'react'
 import { k8sApi } from '../../api/provider'
 
 interface YamlEditorModalProps {
@@ -28,9 +28,10 @@ export const YamlEditorModal: React.FC<YamlEditorModalProps> = ({
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  if (!isOpen) return null
+  const canLoadExistingResource = mode !== 'create' && Boolean(name)
+  const isReadOnly = mode === 'view'
 
-  const handleLoadYaml = async () => {
+  const handleLoadYaml = useCallback(async () => {
     if (!name) return
     setIsLoading(true)
     setError(null)
@@ -42,7 +43,24 @@ export const YamlEditorModal: React.FC<YamlEditorModalProps> = ({
     } finally {
       setIsLoading(false)
     }
-  }
+  }, [contextId, kind, namespace, name])
+
+  useEffect(() => {
+    if (!isOpen) return
+
+    setError(null)
+    if (mode === 'create') {
+      setYaml(initialYaml)
+      return
+    }
+
+    setYaml('')
+    if (canLoadExistingResource) {
+      void handleLoadYaml()
+    }
+  }, [isOpen, mode, initialYaml, canLoadExistingResource, handleLoadYaml])
+
+  if (!isOpen) return null
 
   const handleApply = async () => {
     setIsLoading(true)
@@ -77,7 +95,7 @@ export const YamlEditorModal: React.FC<YamlEditorModalProps> = ({
         </div>
 
         <div className="yaml-editor-toolbar">
-          {mode !== 'create' && name && (
+          {canLoadExistingResource && (
             <button onClick={handleLoadYaml} disabled={isLoading}>
               Load Current
             </button>
@@ -93,6 +111,7 @@ export const YamlEditorModal: React.FC<YamlEditorModalProps> = ({
           className="yaml-editor"
           value={yaml}
           onChange={(e) => setYaml(e.target.value)}
+          readOnly={isReadOnly}
           placeholder="apiVersion: v1
 kind: Namespace
 metadata:
@@ -102,15 +121,17 @@ metadata:
 
         <div className="yaml-editor-footer">
           <button onClick={onClose} disabled={isLoading}>
-            Cancel
+            {isReadOnly ? 'Close' : 'Cancel'}
           </button>
-          <button
-            onClick={handleApply}
-            disabled={isLoading || !yaml.trim()}
-            className="apply-btn"
-          >
-            {isLoading ? 'Applying...' : 'Apply'}
-          </button>
+          {!isReadOnly && (
+            <button
+              onClick={handleApply}
+              disabled={isLoading || !yaml.trim()}
+              className="apply-btn"
+            >
+              {isLoading ? 'Applying...' : 'Apply'}
+            </button>
+          )}
         </div>
       </div>
     </div>

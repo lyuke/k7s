@@ -11,6 +11,8 @@
     "test:coverage": "node ./test/run-coverage.js",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
+    "rebuild:native": "node scripts/rebuild-native.mjs --required",
+    "postinstall": "node scripts/rebuild-native.mjs",
     "icon:mac": "bash scripts/generate-mac-icon.sh",
     "dist:mac": "bash scripts/macos-package.sh",
     "dist:mac:arm64": "ARCH=arm64 bash scripts/macos-package.sh",
@@ -54,17 +56,18 @@
     "zustand": "^5.0.12"
   },
   "devDependencies": {
+    "@electron/rebuild": "^4.0.4",
     "@types/express": "^5.0.6",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^20.12.12",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "@types/ws": "^8.18.1",
-    "@vitejs/plugin-react": "^4.3.1",
-    "electron": "^31.0.2",
+    "@vitejs/plugin-react": "^4.7.0",
+    "electron": "^41.3.0",
     "electron-builder": "^26.8.1",
-    "electron-vite": "^2.3.0",
+    "electron-vite": "^5.0.0",
     "typescript": "^5.5.4",
-    "vite": "^5.3.5"
+    "vite": "^7.3.2"
   }
 }

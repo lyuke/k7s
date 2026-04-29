@@ -91,7 +91,7 @@ interface UIState {
   setSelectedCronJob: (cj: import('../../../shared/types').CronJobInfo | null) => void
   setCronJobDetailLoading: (loading: boolean) => void
   setIsCreateModalOpen: (open: boolean) => void
-  setIsYamlEditorOpen: (open: boolean, mode?: 'view' | 'edit' | 'create', resource?: { kind: string; namespace: string; name: string }) => void
+  setIsYamlEditorOpen: (open: boolean, mode?: 'view' | 'edit' | 'create', resource?: { kind: string; namespace: string; name: string } | null) => void
 
   // Computed / Utility
   handleSort: (field: string) => void

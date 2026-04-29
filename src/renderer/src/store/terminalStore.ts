@@ -21,7 +21,7 @@ interface TerminalState {
 export const useTerminalInit = (showTerminal: boolean, selectedId: string, containerRef: React.RefObject<HTMLDivElement | null>) => {
   const terminalRef = useRef<Terminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
-  const k8sTerm = (window as unknown as { k8sTerm?: typeof import('../../preload/index').k8sTerm }).k8sTerm
+  const k8sTerm = window.k8sTerm
 
   useEffect(() => {
     if (!showTerminal) {

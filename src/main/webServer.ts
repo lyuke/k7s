@@ -7,7 +7,6 @@ import path from 'path'
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
 import {
-  addKubeconfigPath,
   applyYaml,
   createConfigMap,
   createDeployment,
@@ -49,12 +48,22 @@ import {
   listJobs,
   listNamespaces,
   listNodes,
+  listPersistentVolumeClaims,
+  listPersistentVolumes,
   listPods,
   listReplicaSets,
+  listRoleBindings,
+  listRoles,
   listSecrets,
+  listServiceAccounts,
   listServices,
   listStatefulSets,
   restartWorkload,
+  listStorageClasses,
+  listClusterRoles,
+  listClusterRoleBindings,
+  listHPAs,
+  listEvents,
   scaleDeployment,
   scaleReplicaSet,
   scaleWorkload,
@@ -83,6 +92,11 @@ type ConnectionMeta = {
 
 type WsHandler = (data: unknown, respond: (result: unknown) => void, meta: ConnectionMeta) => Promise<void>
 
+type StartWebServerOptions = {
+  host?: string
+  rendererDevServerUrl?: string
+}
+
 interface WsMessage {
   id: string
   method: string
@@ -98,6 +112,8 @@ interface WsResponse {
   data?: unknown
 }
 
+const WEB_ADD_KUBECONFIG_ERROR = 'Web 模式不支持添加 kubeconfig 文件，请在桌面应用中操作'
+
 // Store active WebSocket connections
 const clients = new Map<WebSocket, { ownerId: string }>()
 
@@ -108,6 +124,9 @@ const sendEvent = (ws: WebSocket, event: string, data: unknown) => {
 // Handlers map - mirrors IPC handlers but for WebSocket
 const handlers: Record<string, WsHandler> = {
   'k7s:list-contexts': async (_data, respond) => respond(await listContexts()),
+  'k7s:add-kubeconfig': async () => {
+    throw new Error(WEB_ADD_KUBECONFIG_ERROR)
+  },
   'k7s:get-context-prefs': async (_data, respond) => respond(await getContextPrefs()),
   'k7s:update-context-name': async (data, respond) => {
     const { contextId, name } = data as { contextId: string; name: string }
@@ -204,6 +223,46 @@ const handlers: Record<string, WsHandler> = {
   'k7s:list-ingresses': async (data, respond) => {
     const { contextId, namespace } = data as { contextId: string; namespace?: string }
     respond(await listIngresses(contextId, namespace))
+  },
+  'k7s:list-persistentvolumes': async (data, respond) => {
+    const { contextId } = data as { contextId: string }
+    respond(await listPersistentVolumes(contextId))
+  },
+  'k7s:list-persistentvolumeclaims': async (data, respond) => {
+    const { contextId, namespace } = data as { contextId: string; namespace?: string }
+    respond(await listPersistentVolumeClaims(contextId, namespace))
+  },
+  'k7s:list-storageclasses': async (data, respond) => {
+    const { contextId } = data as { contextId: string }
+    respond(await listStorageClasses(contextId))
+  },
+  'k7s:list-serviceaccounts': async (data, respond) => {
+    const { contextId, namespace } = data as { contextId: string; namespace?: string }
+    respond(await listServiceAccounts(contextId, namespace))
+  },
+  'k7s:list-roles': async (data, respond) => {
+    const { contextId, namespace } = data as { contextId: string; namespace?: string }
+    respond(await listRoles(contextId, namespace))
+  },
+  'k7s:list-rolebindings': async (data, respond) => {
+    const { contextId, namespace } = data as { contextId: string; namespace?: string }
+    respond(await listRoleBindings(contextId, namespace))
+  },
+  'k7s:list-clusterroles': async (data, respond) => {
+    const { contextId } = data as { contextId: string }
+    respond(await listClusterRoles(contextId))
+  },
+  'k7s:list-clusterrolebindings': async (data, respond) => {
+    const { contextId } = data as { contextId: string }
+    respond(await listClusterRoleBindings(contextId))
+  },
+  'k7s:list-horizontalpodautoscalers': async (data, respond) => {
+    const { contextId, namespace } = data as { contextId: string; namespace?: string }
+    respond(await listHPAs(contextId, namespace))
+  },
+  'k7s:list-events': async (data, respond) => {
+    const { contextId, namespace } = data as { contextId: string; namespace?: string }
+    respond(await listEvents(contextId, namespace))
   },
   'k7s:delete-pod': async (data, respond) => {
     const { contextId, namespace, name } = data as { contextId: string; namespace: string; name: string }
@@ -353,8 +412,17 @@ const hasValidSessionCookie = (cookieHeader: string | undefined, token: string) 
   return cookieHeader.split(';').some((cookie) => cookie.trim() === `k7s_session=${token}`)
 }
 
-function setupWebSocket(wss: WebSocketServer) {
-  wss.on('connection', (ws: WebSocket) => {
+const isAllowedOrigin = (origin: string | undefined, allowedOrigins: Set<string>) => (
+  !origin || allowedOrigins.has(origin)
+)
+
+function setupWebSocket(wss: WebSocketServer, allowedOrigins: Set<string>) {
+  wss.on('connection', (ws: WebSocket, req) => {
+    if (!isAllowedOrigin(req.headers.origin, allowedOrigins)) {
+      ws.close(1008, 'Origin not allowed')
+      return
+    }
+
     const ownerId = randomUUID()
     clients.set(ws, { ownerId })
 
@@ -362,9 +430,12 @@ function setupWebSocket(wss: WebSocketServer) {
     let windowStart = Date.now()
 
     ws.on('message', async (message: Buffer) => {
+      let messageId = 'error'
+
       // Message size guard
       if (message.length > WS_MAX_MESSAGE_BYTES) {
         ws.send(JSON.stringify({ id: 'error', error: 'Message too large' }))
+        ws.close()
         return
       }
 
@@ -377,11 +448,13 @@ function setupWebSocket(wss: WebSocketServer) {
       messageCount++
       if (messageCount > WS_RATE_LIMIT_MAX) {
         ws.send(JSON.stringify({ id: 'error', error: 'Rate limit exceeded' }))
+        ws.close()
         return
       }
 
       try {
         const msg: WsMessage = JSON.parse(message.toString())
+        messageId = msg.id
         const handler = handlers[msg.method]
 
         if (!handler) {
@@ -395,10 +468,10 @@ function setupWebSocket(wss: WebSocketServer) {
           ws.send(JSON.stringify(response))
         }
 
-        await handler(msg.data || msg.params, respond, { ownerId, ws })
+        await handler(msg.data ?? msg.params, respond, { ownerId, ws })
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error)
-        ws.send(JSON.stringify({ id: 'error', error: errorMsg }))
+        ws.send(JSON.stringify({ id: messageId, error: errorMsg }))
       }
     })
 
@@ -414,16 +487,49 @@ function setupWebSocket(wss: WebSocketServer) {
   })
 }
 
-export function startWebServer(port: number = 3000): { server: ReturnType<typeof createServer>; wss: WebSocketServer } {
+const proxyRendererDevServer = (rendererDevServerUrl: string) => {
+  return async (req: Request, res: Response) => {
+    try {
+      const targetUrl = new URL(req.originalUrl, rendererDevServerUrl)
+      const response = await fetch(targetUrl, {
+        method: req.method,
+        headers: {
+          accept: req.headers.accept || '*/*',
+          'user-agent': req.headers['user-agent'] || 'k7s-web-proxy',
+        },
+      })
+      const body = Buffer.from(await response.arrayBuffer())
+
+      response.headers.forEach((value, key) => {
+        if (!['content-encoding', 'content-length', 'transfer-encoding'].includes(key)) {
+          res.setHeader(key, value)
+        }
+      })
+      res.status(response.status).send(body)
+    } catch (error) {
+      res.status(502).send(`Renderer dev server unavailable: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+}
+
+export function startWebServer(
+  port: number = 3000,
+  options: StartWebServerOptions = {}
+): { server: ReturnType<typeof createServer>; wss: WebSocketServer } {
   const app = express()
-  const host = process.env.K7S_WEB_HOST || '127.0.0.1'
+  const host = options.host || process.env.K7S_WEB_HOST || '127.0.0.1'
   const sessionToken = randomUUID().replace(/-/g, '')
 
   // CORS: only allow same-origin and localhost (web mode is local-only)
   const allowedOrigins = new Set([
     `http://localhost:${port}`,
-    `http://127.0.0.1:${port}`
+    `http://127.0.0.1:${port}`,
+    `http://[::1]:${port}`,
   ])
+  if (options.rendererDevServerUrl) {
+    allowedOrigins.add(new URL(options.rendererDevServerUrl).origin)
+  }
+
   app.use((req, res, next) => {
     if (!isLocalRequest(req)) {
       res.status(403).json({ error: 'Local access only' })
@@ -432,7 +538,7 @@ export function startWebServer(port: number = 3000): { server: ReturnType<typeof
 
     res.header('Set-Cookie', `k7s_session=${sessionToken}; HttpOnly; SameSite=Strict; Path=/`)
     const origin = req.headers.origin
-    if (origin && allowedOrigins.has(origin)) {
+    if (origin && isAllowedOrigin(origin, allowedOrigins)) {
       res.header('Access-Control-Allow-Origin', origin)
       res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
       res.header('Access-Control-Allow-Headers', 'Content-Type')
@@ -444,10 +550,6 @@ export function startWebServer(port: number = 3000): { server: ReturnType<typeof
     next()
   })
 
-  // Serve static files from renderer build
-  const rendererDistPath = path.join(__dirname, '../renderer')
-  app.use(express.static(rendererDistPath))
-
   // Health check endpoint
   app.get('/api/health', (_req: Request, res: Response) => {
     res.json({ status: 'ok', mode: 'web' })
@@ -458,22 +560,30 @@ export function startWebServer(port: number = 3000): { server: ReturnType<typeof
     try {
       // In web mode, we'd typically handle file upload differently
       // For now, we return a message about the desktop app
-      res.json({ message: 'Please use the desktop app to add kubeconfig files', contexts: [], addedIds: [] })
+      res.status(400).json({ error: WEB_ADD_KUBECONFIG_ERROR })
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) })
     }
   })
 
-  // SPA fallback - serve index.html for all non-API routes
-  app.get('/{*path}', (_req: Request, res: Response) => {
-    const indexPath = path.join(rendererDistPath, 'index.html')
-    res.sendFile(indexPath)
-  })
+  // Serve static files from renderer build, or proxy Vite's renderer dev server in dev mode.
+  const rendererDistPath = path.join(__dirname, '../renderer')
+  const rendererIndexPath = path.join(rendererDistPath, 'index.html')
+  if (options.rendererDevServerUrl) {
+    app.use(proxyRendererDevServer(options.rendererDevServerUrl))
+  } else {
+    app.use(express.static(rendererDistPath))
+
+    // SPA fallback - serve index.html for all non-API routes
+    app.get('/{*path}', (_req: Request, res: Response) => {
+      res.sendFile(rendererIndexPath)
+    })
+  }
 
   const server = createServer(app)
   const wss = new WebSocketServer({ noServer: true })
 
-  setupWebSocket(wss)
+  setupWebSocket(wss, allowedOrigins)
 
   server.on('upgrade', (request, socket, head) => {
     if (request.url !== '/ws') {
@@ -495,7 +605,7 @@ export function startWebServer(port: number = 3000): { server: ReturnType<typeof
     }
 
     const origin = request.headers.origin
-    if (origin && !allowedOrigins.has(origin)) {
+    if (origin && !isAllowedOrigin(origin, allowedOrigins)) {
       socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
       socket.destroy()
       return

@@ -153,13 +153,18 @@ const createWindow = () => {
 }
 
 app.whenReady().then(() => {
-  // Start web server for remote access (runs alongside Electron)
+  // Start optional local web server (runs alongside Electron)
   // Web server is only enabled when K7S_ENABLE_WEB=true is set
-  const webPort = parseInt(process.env.K7S_WEB_PORT || '3000', 10)
+  const parsedWebPort = Number.parseInt(process.env.K7S_WEB_PORT || '3000', 10)
+  const webPort = Number.isInteger(parsedWebPort) && parsedWebPort > 0 ? parsedWebPort : 3000
+  const webHost = process.env.K7S_WEB_HOST || '127.0.0.1'
   const enableWeb = process.env.K7S_ENABLE_WEB === 'true'
   if (enableWeb) {
-    startWebServer(webPort)
-    console.log(`k7s web server enabled on port ${webPort}`)
+    startWebServer(webPort, {
+      host: webHost,
+      rendererDevServerUrl: process.env.VITE_DEV_SERVER_URL || process.env.ELECTRON_RENDERER_URL,
+    })
+    console.log(`k7s web server enabled on ${webHost}:${webPort}`)
   }
 
   createWindow()
@@ -174,20 +179,25 @@ app.whenReady().then(() => {
 // IPC error handling helper with timeout
 const DEFAULT_TIMEOUT = 30000 // 30 seconds
 
-const wrapHandler = <T extends (...args: unknown[]) => Promise<unknown>>(
-  handler: T,
+const wrapHandler = <TArgs extends unknown[], TResult>(
+  handler: (...args: TArgs) => Promise<TResult>,
   timeout = DEFAULT_TIMEOUT
 ) => {
-  return async (...args: Parameters<T>): Promise<Awaited<ReturnType<T>>> => {
+  return async (...args: TArgs): Promise<TResult> => {
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Request timeout')), timeout)
+      timeoutId = setTimeout(() => reject(new Error('Request timeout')), timeout)
     })
     try {
       const result = await Promise.race([handler(...args), timeoutPromise])
-      return result as Awaited<ReturnType<T>>
+      return result as TResult
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       throw new Error(`IPC Error: ${message}`)
+    } finally {
+      if (timeoutId) {
+        clearTimeout(timeoutId)
+      }
     }
   }
 }
@@ -401,7 +411,7 @@ ipcMain.handle('k7s:unsubscribe-watch', wrapHandler(async () => {
 }))
 
 // Terminal state
-let terminalPty: pty.IStandalone | null = null
+let terminalPty: pty.IPty | null = null
 let terminalLock: Promise<void> = Promise.resolve()
 
 // Track temp kubeconfig files for cleanup
@@ -431,7 +441,7 @@ process.on('SIGINT', () => {
   process.exit(0)
 })
 
-ipcMain.handle('terminal:create', wrapHandler(async (_event, contextId: string) => {
+ipcMain.handle('terminal:create', wrapHandler(async (_event: IpcMainInvokeEvent, contextId: string) => {
   let resolveLock!: () => void
   const prevLock = terminalLock
   terminalLock = new Promise<void>(resolve => { resolveLock = resolve })

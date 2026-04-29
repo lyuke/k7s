@@ -18,6 +18,7 @@ import type {
   IngressInfo,
   JobInfo,
   K7sPushEvent,
+  K8sTermApi,
   KubernetesResourceKind,
   NamespaceInfo,
   NodeInfo,
@@ -128,5 +129,6 @@ declare global {
       unsubscribeWatch: () => Promise<{ success: boolean }>
       onPushEvent: (callback: (event: K7sPushEvent) => void) => void
     }
+    k8sTerm?: K8sTermApi
   }
 }

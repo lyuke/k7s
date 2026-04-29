@@ -38,7 +38,7 @@ import {
 import { app } from 'electron'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { load as yamlLoad } from 'js-yaml'
+import { loadAll as yamlLoadAll } from 'js-yaml'
 import type {
   AddContextsResult,
   ClusterHealth,
@@ -85,7 +85,8 @@ import type {
   ContextPrefs,
   ContextGroup
 } from '../shared/types'
-import { request as httpsRequest, Agent } from 'node:https'
+import { request as httpsRequest } from 'node:https'
+import type { RequestOptions as HttpsRequestOptions } from 'node:https'
 import { request as httpRequest } from 'node:http'
 
 type ContextEntry = {
@@ -553,32 +554,14 @@ export const getNodeMetrics = async (contextId: string, nodeName: string): Promi
     return null
   }
 
-  const cluster = entry.kubeConfig.clusters.find(c => c.name === currentCluster.name)
-  if (!cluster) {
-    return null
-  }
-
-  const user = entry.kubeConfig.getCurrentUser()
-  if (!user) {
-    return null
-  }
-
   const isHTTPS = currentCluster.server.startsWith('https://')
   const requestModule = isHTTPS ? httpsRequest : httpRequest
 
   const url = new URL(currentCluster.server)
   const path = `/apis/metrics.k8s.io/v1beta1/nodes/${nodeName}`
-
-  const options: {
-    hostname: string
-    port?: number
-    path: string
-    method: string
-    headers: Record<string, string>
-    agent?: Agent
-  } = {
+  const options: HttpsRequestOptions = {
     hostname: url.hostname,
-    port: url.port || (isHTTPS ? 443 : 80),
+    port: url.port ? Number(url.port) : (isHTTPS ? 443 : 80),
     path,
     method: 'GET',
     headers: {
@@ -586,25 +569,10 @@ export const getNodeMetrics = async (contextId: string, nodeName: string): Promi
     }
   }
 
-  // Add auth header
-  if (user.token) {
-    options.headers['Authorization'] = `Bearer ${user.token}`
-  }
-
-  // Add client certs for HTTPS
-  if (isHTTPS && cluster.caData) {
-    options.agent = new Agent({
-      ca: Buffer.from(cluster.caData, 'base64')
-    })
-  }
-
-  // Add client certificate authentication
-  if (user.certData && user.keyData) {
-    const agent = options.agent as Agent | undefined
-    if (agent) {
-      (agent as Agent & { key?: Buffer; cert?: Buffer }).key = Buffer.from(user.keyData, 'base64')
-      ;(agent as Agent & { key?: Buffer; cert?: Buffer }).cert = Buffer.from(user.certData, 'base64')
-    }
+  try {
+    await entry.kubeConfig.applyToHTTPSOptions(options)
+  } catch {
+    return null
   }
 
   return new Promise((resolve) => {
@@ -617,17 +585,21 @@ export const getNodeMetrics = async (contextId: string, nodeName: string): Promi
           return
         }
         try {
-          const parsed = JSON.parse(data)
-          const node = parsed.items?.[0]
-          if (!node) {
+          const parsed = JSON.parse(data) as {
+            metadata?: { name?: string }
+            timestamp?: string
+            usage?: { cpu?: string; memory?: string }
+          }
+          const name = parsed.metadata?.name || nodeName
+          if (!parsed.usage) {
             resolve(null)
             return
           }
           resolve({
-            name: node.name,
-            timestamp: node.timestamp || '',
-            cpu: node.usage?.cpu || '0',
-            memory: node.usage?.memory || '0'
+            name,
+            timestamp: parsed.timestamp || '',
+            cpu: parsed.usage.cpu || '0',
+            memory: parsed.usage.memory || '0'
           })
         } catch {
           resolve(null)
@@ -1852,66 +1824,91 @@ export const applyYaml = async (contextId: string, yaml: string): Promise<Create
   const customApi = createCustomObjectsApi(entry)
 
   try {
-    const docs = yaml.split('---').filter(d => d.trim())
+    const docs = yamlLoadAll(yaml).filter((doc): doc is Record<string, unknown> => (
+      Boolean(doc) && typeof doc === 'object' && !Array.isArray(doc)
+    ))
 
-    for (const doc of docs) {
-      if (!doc.trim()) continue
-
-      const parsed = yamlLoad(doc) as Record<string, unknown>
-      if (!parsed || typeof parsed !== 'object') continue
+    for (const parsed of docs) {
       const kind = parsed.kind as string | undefined
       const apiVersion = parsed.apiVersion as string | undefined
       const metadata = (parsed.metadata || {}) as Record<string, unknown>
+      const resourceName = typeof metadata.name === 'string' ? metadata.name : undefined
 
-      if (!kind || !apiVersion || !metadata.name) {
+      if (!kind || !apiVersion || !resourceName) {
         continue
       }
 
-      const namespace = (metadata.namespace as string | undefined) || 'default'
+      const namespace = typeof metadata.namespace === 'string' && metadata.namespace
+        ? metadata.namespace
+        : 'default'
 
       if (kind === 'Namespace') {
         const api = createCoreV1Api(entry)
-        await api.createNamespace({ body: parsed })
+        try {
+          await api.patchNamespace({ name: resourceName, body: parsed })
+        } catch {
+          await api.createNamespace({ body: parsed })
+        }
       } else if (kind === 'Deployment') {
         const api = createAppsV1Api(entry)
         try {
-          await api.patchNamespacedDeployment({ name: metadata.name, namespace, body: parsed })
+          await api.patchNamespacedDeployment({ name: resourceName, namespace, body: parsed })
         } catch {
           await api.createNamespacedDeployment({ namespace, body: parsed })
         }
       } else if (kind === 'Service') {
         const api = createCoreV1Api(entry)
         try {
-          await api.patchNamespacedService({ name: metadata.name, namespace, body: parsed })
+          await api.patchNamespacedService({ name: resourceName, namespace, body: parsed })
         } catch {
           await api.createNamespacedService({ namespace, body: parsed })
         }
       } else if (kind === 'ConfigMap') {
         const api = createCoreV1Api(entry)
         try {
-          await api.patchNamespacedConfigMap({ name: metadata.name, namespace, body: parsed })
+          await api.patchNamespacedConfigMap({ name: resourceName, namespace, body: parsed })
         } catch {
           await api.createNamespacedConfigMap({ namespace, body: parsed })
         }
       } else if (kind === 'Secret') {
         const api = createCoreV1Api(entry)
         try {
-          await api.patchNamespacedSecret({ name: metadata.name, namespace, body: parsed })
+          await api.patchNamespacedSecret({ name: resourceName, namespace, body: parsed })
         } catch {
           await api.createNamespacedSecret({ namespace, body: parsed })
         }
       } else if (kind === 'Ingress') {
         const api = createNetworkingV1Api(entry)
         try {
-          await api.patchNamespacedIngress({ name: metadata.name, namespace, body: parsed })
+          await api.patchNamespacedIngress({ name: resourceName, namespace, body: parsed })
         } catch {
           await api.createNamespacedIngress({ namespace, body: parsed })
         }
       } else {
         // For other types, use CustomObjectsApi
-        const group = apiVersion.split('/')[0]
-        const version = apiVersion.split('/')[1] || 'v1'
-        await customApi.patchNamespacedCustomObject(group, version, namespace, kind.toLowerCase() + 's', metadata.name, parsed)
+        const [group, version = 'v1'] = apiVersion.split('/')
+        if (!group) {
+          continue
+        }
+        const plural = `${kind.toLowerCase()}s`
+        try {
+          await customApi.patchNamespacedCustomObject({
+            group,
+            version,
+            namespace,
+            plural,
+            name: resourceName,
+            body: parsed
+          })
+        } catch {
+          await customApi.createNamespacedCustomObject({
+            group,
+            version,
+            namespace,
+            plural,
+            body: parsed
+          })
+        }
       }
     }
 
