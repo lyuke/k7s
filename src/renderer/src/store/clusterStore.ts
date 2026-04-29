@@ -206,8 +206,8 @@ export const useClusterStore = create<ClusterState>((set, get) => ({
         replicaSets: settledValue(results[5], current.replicaSets),
         jobs: settledValue(results[6], current.jobs),
         cronJobs: settledValue(results[7], current.cronJobs),
-        status: hasData ? 'ready' : 'error',
-        error: firstError && !hasData
+        status: firstError ? 'error' : 'ready',
+        error: firstError
           ? firstError.reason instanceof Error ? firstError.reason.message : String(firstError.reason)
           : '',
         lastRefreshTime: hasData ? new Date() : current.lastRefreshTime

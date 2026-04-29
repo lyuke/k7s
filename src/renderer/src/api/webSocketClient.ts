@@ -6,7 +6,7 @@ type Handler = (result: unknown) => void
 type PendingRequest = {
   resolve: (result: unknown) => void
   reject: (error: Error) => void
-  timeoutId: ReturnType<typeof setTimeout>
+  timeoutId?: ReturnType<typeof setTimeout>
 }
 
 interface WsMessage {
@@ -24,6 +24,12 @@ interface WsResponse {
   data?: unknown
 }
 
+const unrefTimer = <T extends ReturnType<typeof setTimeout>>(timerId: T): T => {
+  const unref = (timerId as { unref?: () => void }).unref
+  unref?.call(timerId)
+  return timerId
+}
+
 export class WebSocketClient {
   private ws: WebSocket | null = null
   private pendingRequests = new Map<RequestId, PendingRequest>()
@@ -35,6 +41,9 @@ export class WebSocketClient {
   private eventHandlers = new Map<string, Set<Handler>>()
   private connectionPromise: Promise<void> | null = null
   private intentionalClose = false
+  private connectionTimeoutMs = 10000
+  private connectionTimeoutId: ReturnType<typeof setTimeout> | null = null
+  private reconnectTimerId: ReturnType<typeof setTimeout> | null = null
 
   constructor() {
     // Determine WebSocket URL based on current location
@@ -54,14 +63,46 @@ export class WebSocketClient {
 
     this.intentionalClose = false
     this.connectionPromise = new Promise((resolve, reject) => {
+      let settled = false
+      let opened = false
+
+      const clearConnectionTimeout = () => {
+        if (this.connectionTimeoutId) {
+          clearTimeout(this.connectionTimeoutId)
+          this.connectionTimeoutId = null
+        }
+      }
+
+      const resolveConnection = () => {
+        if (settled) return
+        settled = true
+        clearConnectionTimeout()
+        this.connectionPromise = null
+        resolve()
+      }
+
+      const rejectConnection = (error: Error) => {
+        if (settled) return
+        settled = true
+        clearConnectionTimeout()
+        this.connectionPromise = null
+        reject(error)
+      }
+
       try {
         this.ws = new WebSocket(this.wsUrl)
+        this.connectionTimeoutId = unrefTimer(setTimeout(() => {
+          rejectConnection(new Error('WebSocket connection timeout'))
+          if (this.ws?.readyState === WebSocket.CONNECTING) {
+            this.ws.close()
+          }
+        }, this.connectionTimeoutMs))
 
         this.ws.onopen = () => {
           console.log('WebSocket connected')
+          opened = true
           this.reconnectAttempts = 0
-          this.connectionPromise = null
-          resolve()
+          resolveConnection()
         }
 
         this.ws.onmessage = (event) => {
@@ -75,7 +116,9 @@ export class WebSocketClient {
 
             const pendingRequest = this.pendingRequests.get(response.id)
             if (pendingRequest) {
-              clearTimeout(pendingRequest.timeoutId)
+              if (pendingRequest.timeoutId) {
+                clearTimeout(pendingRequest.timeoutId)
+              }
               if (response.error) {
                 pendingRequest.reject(new Error(response.error))
               } else {
@@ -91,21 +134,20 @@ export class WebSocketClient {
         this.ws.onclose = () => {
           console.log('WebSocket disconnected')
           this.ws = null
-          this.connectionPromise = null
+          rejectConnection(new Error('WebSocket disconnected'))
           this.rejectPendingRequests(new Error('WebSocket disconnected'))
-          if (!this.intentionalClose) {
+          if (!this.intentionalClose && opened) {
             this.attemptReconnect()
           }
         }
 
         this.ws.onerror = (error) => {
           console.error('WebSocket error:', error)
-          this.connectionPromise = null
-          reject(new Error('WebSocket connection failed'))
+          const message = error instanceof Error ? error.message : 'WebSocket connection failed'
+          rejectConnection(new Error(message))
         }
       } catch (error) {
-        this.connectionPromise = null
-        reject(error)
+        rejectConnection(error instanceof Error ? error : new Error(String(error)))
       }
     })
 
@@ -121,24 +163,33 @@ export class WebSocketClient {
     this.reconnectAttempts++
     const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1)
 
-    setTimeout(() => {
+    if (this.reconnectTimerId) {
+      clearTimeout(this.reconnectTimerId)
+    }
+
+    this.reconnectTimerId = unrefTimer(setTimeout(() => {
+      this.reconnectTimerId = null
       console.log(`Attempting to reconnect (${this.reconnectAttempts}/${this.maxReconnectAttempts})...`)
       this.connect().catch(() => {
         // Reconnect failed, will try again or give up
       })
-    }, delay)
+    }, delay))
   }
 
   private rejectPendingRequests(error: Error) {
     this.pendingRequests.forEach((pendingRequest) => {
-      clearTimeout(pendingRequest.timeoutId)
+      if (pendingRequest.timeoutId) {
+        clearTimeout(pendingRequest.timeoutId)
+      }
       pendingRequest.reject(error)
     })
     this.pendingRequests.clear()
   }
 
   private async send(method: string, data?: unknown): Promise<unknown> {
-    await this.connect()
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      await this.connect()
+    }
 
     return new Promise((resolve, reject) => {
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
@@ -148,23 +199,29 @@ export class WebSocketClient {
 
       const id = `msg_${++this.messageId}`
       const message: WsMessage = { id, method, data }
-      const timeoutId = setTimeout(() => {
+      const pendingRequest: PendingRequest = {
+        resolve,
+        reject,
+      }
+      this.pendingRequests.set(id, pendingRequest)
+
+      pendingRequest.timeoutId = unrefTimer(setTimeout(() => {
         if (this.pendingRequests.has(id)) {
           this.pendingRequests.delete(id)
           reject(new Error('Request timeout'))
         }
-      }, 30000)
+      }, 30000))
 
-      this.pendingRequests.set(id, {
-        resolve,
-        reject,
-        timeoutId
-      })
+      if (!this.pendingRequests.has(id)) {
+        return
+      }
 
       try {
         this.ws.send(JSON.stringify(message))
       } catch (error) {
-        clearTimeout(timeoutId)
+        if (pendingRequest.timeoutId) {
+          clearTimeout(pendingRequest.timeoutId)
+        }
         this.pendingRequests.delete(id)
         reject(error instanceof Error ? error : new Error(String(error)))
       }
@@ -173,6 +230,14 @@ export class WebSocketClient {
 
   disconnect() {
     this.intentionalClose = true
+    if (this.reconnectTimerId) {
+      clearTimeout(this.reconnectTimerId)
+      this.reconnectTimerId = null
+    }
+    if (this.connectionTimeoutId) {
+      clearTimeout(this.connectionTimeoutId)
+      this.connectionTimeoutId = null
+    }
     this.rejectPendingRequests(new Error('WebSocket disconnected'))
     this.connectionPromise = null
     if (this.ws) {

@@ -85,7 +85,8 @@ import type {
   ContextPrefs,
   ContextGroup
 } from '../shared/types'
-import { request as httpsRequest, RequestOptions as HttpsRequestOptions } from 'node:https'
+import { request as httpsRequest } from 'node:https'
+import type { RequestOptions as HttpsRequestOptions } from 'node:https'
 import { request as httpRequest } from 'node:http'
 
 type ContextEntry = {
