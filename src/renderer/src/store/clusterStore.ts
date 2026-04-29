@@ -181,7 +181,11 @@ export const useClusterStore = create<ClusterState>((set, get) => ({
     set({ error: '' })
 
     try {
-      const [nodeList, podList, deployList, dsList, stsList, rsList, jobList, cjList] = await Promise.all([
+      const current = get()
+      const settledValue = <T>(result: PromiseSettledResult<T>, fallback: T): T => (
+        result.status === 'fulfilled' ? result.value : fallback
+      )
+      const results = await Promise.allSettled([
         k8sApi.listNodes(selectedId),
         k8sApi.listPods(selectedId),
         k8sApi.listDeployments(selectedId),
@@ -191,17 +195,22 @@ export const useClusterStore = create<ClusterState>((set, get) => ({
         k8sApi.listJobs(selectedId),
         k8sApi.listCronJobs(selectedId)
       ])
+      const firstError = results.find((result): result is PromiseRejectedResult => result.status === 'rejected')
+      const hasData = results.some((result) => result.status === 'fulfilled')
       set({
-        nodes: nodeList,
-        pods: podList,
-        deployments: deployList,
-        daemonSets: dsList,
-        statefulSets: stsList,
-        replicaSets: rsList,
-        jobs: jobList,
-        cronJobs: cjList,
-        status: 'ready',
-        lastRefreshTime: new Date()
+        nodes: settledValue(results[0], current.nodes),
+        pods: settledValue(results[1], current.pods),
+        deployments: settledValue(results[2], current.deployments),
+        daemonSets: settledValue(results[3], current.daemonSets),
+        statefulSets: settledValue(results[4], current.statefulSets),
+        replicaSets: settledValue(results[5], current.replicaSets),
+        jobs: settledValue(results[6], current.jobs),
+        cronJobs: settledValue(results[7], current.cronJobs),
+        status: hasData ? 'ready' : 'error',
+        error: firstError && !hasData
+          ? firstError.reason instanceof Error ? firstError.reason.message : String(firstError.reason)
+          : '',
+        lastRefreshTime: hasData ? new Date() : current.lastRefreshTime
       })
     } catch (err) {
       set({ status: 'error', error: err instanceof Error ? err.message : '加载失败' })
@@ -226,22 +235,12 @@ export const useClusterStore = create<ClusterState>((set, get) => ({
     if (!selectedId) return
 
     try {
-      const [
-        serviceList,
-        configMapList,
-        secretList,
-        ingressList,
-        pvList,
-        pvcList,
-        scList,
-        saList,
-        roleList,
-        roleBindingList,
-        crList,
-        crbList,
-        hpaList,
-        eventList
-      ] = await Promise.all([
+      const current = get()
+      const settledValue = <T>(result: PromiseSettledResult<T>, fallback: T): T => (
+        result.status === 'fulfilled' ? result.value : fallback
+      )
+
+      const results = await Promise.allSettled([
         k8sApi.listServices(selectedId),
         k8sApi.listConfigMaps(selectedId),
         k8sApi.listSecrets(selectedId),
@@ -258,20 +257,20 @@ export const useClusterStore = create<ClusterState>((set, get) => ({
         k8sApi.listEvents(selectedId)
       ])
       set({
-        services: serviceList,
-        configMaps: configMapList,
-        secrets: secretList,
-        ingresses: ingressList,
-        persistentVolumes: pvList,
-        persistentVolumeClaims: pvcList,
-        storageClasses: scList,
-        serviceAccounts: saList,
-        roles: roleList,
-        roleBindings: roleBindingList,
-        clusterRoles: crList,
-        clusterRoleBindings: crbList,
-        hpas: hpaList,
-        events: eventList
+        services: settledValue(results[0], current.services),
+        configMaps: settledValue(results[1], current.configMaps),
+        secrets: settledValue(results[2], current.secrets),
+        ingresses: settledValue(results[3], current.ingresses),
+        persistentVolumes: settledValue(results[4], current.persistentVolumes),
+        persistentVolumeClaims: settledValue(results[5], current.persistentVolumeClaims),
+        storageClasses: settledValue(results[6], current.storageClasses),
+        serviceAccounts: settledValue(results[7], current.serviceAccounts),
+        roles: settledValue(results[8], current.roles),
+        roleBindings: settledValue(results[9], current.roleBindings),
+        clusterRoles: settledValue(results[10], current.clusterRoles),
+        clusterRoleBindings: settledValue(results[11], current.clusterRoleBindings),
+        hpas: settledValue(results[12], current.hpas),
+        events: settledValue(results[13], current.events)
       })
     } catch {
       // Silently fail for new resource types

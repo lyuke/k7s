@@ -247,6 +247,7 @@ const App = () => {
 
   // Terminal store
   const showTerminal = useTerminalStore((s) => s.showTerminal)
+  const terminalAvailable = useTerminalStore((s) => s.terminalAvailable)
   const toggleTerminal = useTerminalStore((s) => s.toggleTerminal)
   const setShowTerminal = useTerminalStore((s) => s.setShowTerminal)
   const terminalRef = useRef<HTMLDivElement>(null)
@@ -1749,13 +1750,15 @@ const App = () => {
             <div className={`watch-status ${watchConnected ? 'connected' : 'disconnected'}`}>
               {watchConnected ? 'Push Watch On' : 'Push Watch Off'}
             </div>
-            <button
-              className={`terminal-btn ${showTerminal ? 'active' : ''}`}
-              onClick={toggleTerminal}
-              title="终端"
-            >
-              Terminal
-            </button>
+            {terminalAvailable && (
+              <button
+                className={`terminal-btn ${showTerminal ? 'active' : ''}`}
+                onClick={toggleTerminal}
+                title="终端"
+              >
+                Terminal
+              </button>
+            )}
           </div>
         </div>
 
@@ -2327,7 +2330,7 @@ const App = () => {
         />
       )}
 
-      {showTerminal && (
+      {showTerminal && terminalAvailable && (
         <div className="terminal-panel">
           <div className="terminal-header">
             <span>Terminal</span>

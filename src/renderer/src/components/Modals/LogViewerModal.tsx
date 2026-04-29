@@ -238,7 +238,7 @@ export const LogViewerModal = ({ pod, contextId, onClose }: LogViewerModalProps)
                 <option value={1000}>1000</option>
               </select>
             </div>
-            <button className="log-viewer-btn" onClick={fetchLogs} disabled={loading || follow}>
+            <button className="log-viewer-btn" onClick={() => { void fetchLogs() }} disabled={loading || follow}>
               刷新
             </button>
           </div>

@@ -36,8 +36,27 @@ export const NodeDetailModal = ({ node, loading, metrics, metricsLoading, pods, 
 
   const formatMemory = (memory: string) => {
     if (!memory) return '-'
-    // Memory is usually in bytes, convert to Mi or Gi
-    const bytes = parseInt(memory)
+    const match = memory.match(/^([0-9.]+)([KMGTE]i?|)$/)
+    if (!match) return memory
+
+    const value = Number(match[1])
+    if (!Number.isFinite(value)) return memory
+
+    const unit = match[2]
+    const bytes = value * ({
+      '': 1,
+      K: 1000,
+      Ki: 1024,
+      M: 1000 ** 2,
+      Mi: 1024 ** 2,
+      G: 1000 ** 3,
+      Gi: 1024 ** 3,
+      T: 1000 ** 4,
+      Ti: 1024 ** 4,
+      E: 1000 ** 5,
+      Ei: 1024 ** 5,
+    }[unit] ?? 1)
+
     if (bytes < 1024 * 1024) {
       return (bytes / 1024).toFixed(2) + ' Ki'
     }

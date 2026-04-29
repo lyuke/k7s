@@ -15,7 +15,7 @@ import type {
   SecretFormData,
   NamespaceFormData,
   IngressFormData
-} from '../../../shared/types'
+} from '../../../../shared/types'
 
 type ResourceKind = 'Deployment' | 'Service' | 'ConfigMap' | 'Secret' | 'Namespace' | 'Ingress'
 

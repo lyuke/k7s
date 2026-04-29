@@ -551,6 +551,6 @@ export type PodExecData = {
 
 declare global {
   interface Window {
-    k8sTerm: K8sTermApi
+    k8sTerm?: K8sTermApi
   }
 }
