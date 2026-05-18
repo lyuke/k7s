@@ -1,12 +1,16 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { PodInfo } from '../../../../shared/types'
-import { isWebMode, k8sApi } from '../../api/provider'
+import { k8sApi } from '../../api/provider'
 
 interface LogViewerModalProps {
   pod: PodInfo | null
   contextId: string
   onClose: () => void
 }
+
+const safeLogFilePart = (value: string) => (
+  value.trim().replace(/[^a-zA-Z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '') || 'unknown'
+)
 
 export const LogViewerModal = ({ pod, contextId, onClose }: LogViewerModalProps) => {
   const [resolvedPod, setResolvedPod] = useState<PodInfo | null>(null)
@@ -19,6 +23,9 @@ export const LogViewerModal = ({ pod, contextId, onClose }: LogViewerModalProps)
   const [autoScroll, setAutoScroll] = useState(true)
   const [follow, setFollow] = useState(true)
   const [tailLines, setTailLines] = useState(100)
+  const [previous, setPrevious] = useState(false)
+  const [timestamps, setTimestamps] = useState(false)
+  const [logFilter, setLogFilter] = useState('')
   const logsEndRef = useRef<HTMLDivElement>(null)
   const logsContainerRef = useRef<HTMLPreElement>(null)
   const requestIdRef = useRef(0)
@@ -28,6 +35,21 @@ export const LogViewerModal = ({ pod, contextId, onClose }: LogViewerModalProps)
   const resolvedContainerName = containers.some((c) => c.name === containerName)
     ? containerName
     : (containers[0]?.name ?? '')
+  const normalizedLogFilter = logFilter.trim().toLowerCase()
+  const { visibleLogs, logMatchCount } = useMemo(() => {
+    if (!normalizedLogFilter) {
+      return { visibleLogs: logs, logMatchCount: null as number | null }
+    }
+
+    const filteredLogLines = logs
+      .split(/\r?\n/)
+      .filter((line) => line.toLowerCase().includes(normalizedLogFilter))
+
+    return {
+      visibleLogs: filteredLogLines.join('\n'),
+      logMatchCount: filteredLogLines.length,
+    }
+  }, [logs, normalizedLogFilter])
 
   useEffect(() => {
     let cancelled = false
@@ -40,6 +62,9 @@ export const LogViewerModal = ({ pod, contextId, onClose }: LogViewerModalProps)
       setError(null)
       setPodContextError(null)
       setFollow(true)
+      setPrevious(false)
+      setTimestamps(false)
+      setLogFilter('')
       return
     }
 
@@ -47,6 +72,7 @@ export const LogViewerModal = ({ pod, contextId, onClose }: LogViewerModalProps)
     setResolvingPod(true)
     setError(null)
     setPodContextError(null)
+    setLogFilter('')
 
     k8sApi.getPodDetail(contextId, pod.namespace, pod.name)
       .then((detail) => {
@@ -78,10 +104,10 @@ export const LogViewerModal = ({ pod, contextId, onClose }: LogViewerModalProps)
   }, [containerName, resolvedContainerName])
 
   useEffect(() => {
-    if (resolvedPod && contextId && !resolvingPod && !podContextError && !follow) {
+    if (resolvedPod && contextId && !resolvingPod && !podContextError && (!follow || previous)) {
       fetchLogs(resolvedContainerName)
     }
-  }, [contextId, follow, podContextError, resolvedContainerName, resolvedPod, resolvingPod, tailLines])
+  }, [contextId, follow, podContextError, previous, resolvedContainerName, resolvedPod, resolvingPod, tailLines, timestamps])
 
   useEffect(() => {
     return k8sApi.onPushEvent((event) => {
@@ -101,28 +127,20 @@ export const LogViewerModal = ({ pod, contextId, onClose }: LogViewerModalProps)
   }, [])
 
   useEffect(() => {
-    if (!resolvedPod || !contextId || resolvingPod || !follow || podContextError) return
+    if (!resolvedPod || !contextId || resolvingPod || !follow || previous || podContextError) return
 
     let cancelled = false
     setLogs('')
     setLoading(true)
     setError(null)
 
-    if (isWebMode) {
-      fetchLogs(resolvedContainerName)
-      const interval = window.setInterval(() => {
-        fetchLogs(resolvedContainerName)
-      }, 2000)
-      return () => {
-        window.clearInterval(interval)
-      }
-    }
-
     k8sApi.startPodLogStream(contextId, {
       namespace: resolvedPod.namespace,
       podName: resolvedPod.name,
       containerName: resolvedContainerName || undefined,
       tailLines,
+      previous,
+      timestamps,
     })
       .then((result) => {
         if (cancelled) {
@@ -147,7 +165,7 @@ export const LogViewerModal = ({ pod, contextId, onClose }: LogViewerModalProps)
         void k8sApi.stopPodLogStream(currentStreamId)
       }
     }
-  }, [contextId, follow, podContextError, resolvedContainerName, resolvedPod, resolvingPod, tailLines])
+  }, [contextId, follow, podContextError, previous, resolvedContainerName, resolvedPod, resolvingPod, tailLines, timestamps])
 
   useEffect(() => {
     if (autoScroll && logsEndRef.current) {
@@ -166,7 +184,9 @@ export const LogViewerModal = ({ pod, contextId, onClose }: LogViewerModalProps)
         resolvedPod.namespace,
         resolvedPod.name,
         targetContainerName || undefined,
-        tailLines
+        tailLines,
+        previous,
+        timestamps,
       )
       if (requestId === requestIdRef.current) {
         setLogs(logContent)
@@ -184,9 +204,32 @@ export const LogViewerModal = ({ pod, contextId, onClose }: LogViewerModalProps)
   }
 
   const handleCopyLogs = () => {
-    navigator.clipboard.writeText(logs).then(() => {
+    navigator.clipboard.writeText(visibleLogs).then(() => {
       // Could show a toast notification here
     })
+  }
+
+  const handleDownloadLogs = () => {
+    if (!displayPod || !visibleLogs) return
+
+    const downloadTimestamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const containerPart = resolvedContainerName ? `-${safeLogFilePart(resolvedContainerName)}` : ''
+    const sourcePart = previous ? '-previous' : ''
+    const timestampPart = timestamps ? '-timestamps' : ''
+    const fileName = [
+      safeLogFilePart(displayPod.namespace),
+      safeLogFilePart(displayPod.name),
+    ].join('-')
+    const blob = new Blob([visibleLogs], { type: 'text/plain;charset=utf-8' })
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+
+    link.href = url
+    link.download = `${fileName}${containerPart}${sourcePart}${timestampPart}-${downloadTimestamp}.log`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    window.URL.revokeObjectURL(url)
   }
 
   const handleScroll = () => {
@@ -196,6 +239,13 @@ export const LogViewerModal = ({ pod, contextId, onClose }: LogViewerModalProps)
       if (!isAtBottom && autoScroll) {
         setAutoScroll(false)
       }
+    }
+  }
+
+  const handlePreviousChange = (checked: boolean) => {
+    setPrevious(checked)
+    if (checked) {
+      setFollow(false)
     }
   }
 
@@ -238,6 +288,24 @@ export const LogViewerModal = ({ pod, contextId, onClose }: LogViewerModalProps)
                 <option value={1000}>1000</option>
               </select>
             </div>
+            <div className="log-viewer-search">
+              <label>搜索:</label>
+              <input
+                value={logFilter}
+                onChange={(e) => setLogFilter(e.target.value)}
+                placeholder="过滤日志"
+                spellCheck={false}
+              />
+              {logFilter && (
+                <button
+                  className="log-viewer-clear"
+                  onClick={() => setLogFilter('')}
+                  title="清空日志搜索"
+                >
+                  清空
+                </button>
+              )}
+            </div>
             <button className="log-viewer-btn" onClick={() => { void fetchLogs() }} disabled={loading || follow}>
               刷新
             </button>
@@ -255,12 +323,32 @@ export const LogViewerModal = ({ pod, contextId, onClose }: LogViewerModalProps)
               <input
                 type="checkbox"
                 checked={follow}
+                disabled={previous}
                 onChange={(e) => setFollow(e.target.checked)}
               />
               实时追踪
             </label>
+            <label className="log-viewer-checkbox">
+              <input
+                type="checkbox"
+                checked={previous}
+                onChange={(e) => handlePreviousChange(e.target.checked)}
+              />
+              上一轮日志
+            </label>
+            <label className="log-viewer-checkbox">
+              <input
+                type="checkbox"
+                checked={timestamps}
+                onChange={(e) => setTimestamps(e.target.checked)}
+              />
+              时间戳
+            </label>
             <button className="log-viewer-btn" onClick={handleCopyLogs}>
               复制
+            </button>
+            <button className="log-viewer-btn" onClick={handleDownloadLogs} disabled={!visibleLogs}>
+              下载
             </button>
           </div>
         </div>
@@ -277,7 +365,7 @@ export const LogViewerModal = ({ pod, contextId, onClose }: LogViewerModalProps)
               className="log-viewer-content"
               onScroll={handleScroll}
             >
-              {logs || '无可用日志'}
+              {visibleLogs || (normalizedLogFilter ? '无匹配日志' : '无可用日志')}
               <div ref={logsEndRef} />
             </pre>
           )}
@@ -286,7 +374,9 @@ export const LogViewerModal = ({ pod, contextId, onClose }: LogViewerModalProps)
           <span className="log-viewer-info">
             {resolvedContainerName && `容器: ${resolvedContainerName}`}
             {resolvedContainerName && ' | '}
-            {follow ? `实时追踪最近 ${tailLines} 行` : `显示最近 ${tailLines} 行`}
+            {previous ? `显示上一轮最近 ${tailLines} 行` : follow ? `实时追踪最近 ${tailLines} 行` : `显示最近 ${tailLines} 行`}
+            {timestamps && ' | 时间戳'}
+            {logMatchCount !== null && ` | 匹配 ${logMatchCount} 行`}
           </span>
         </div>
       </div>

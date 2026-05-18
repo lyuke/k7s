@@ -14,6 +14,7 @@ export const useKubernetes = () => {
   const replicaSets = useClusterStore((s) => s.replicaSets)
   const jobs = useClusterStore((s) => s.jobs)
   const cronJobs = useClusterStore((s) => s.cronJobs)
+  const helmReleases = useClusterStore((s) => s.helmReleases)
   const status = useClusterStore((s) => s.status)
   const error = useClusterStore((s) => s.error)
   const isRefreshing = useClusterStore((s) => s.isRefreshing)
@@ -38,6 +39,7 @@ export const useKubernetes = () => {
     replicaSets,
     jobs,
     cronJobs,
+    helmReleases,
     status,
     error,
     isRefreshing,

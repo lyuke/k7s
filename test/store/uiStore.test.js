@@ -51,6 +51,16 @@ const detailCases = [
     detail: { name: 'rs-1', namespace: 'default' },
   },
   {
+    label: 'replicationcontroller',
+    apiMethod: 'getReplicationControllerDetail',
+    clickMethod: 'handleReplicationControllerClick',
+    closeMethod: 'handleCloseReplicationControllerDetail',
+    selectedKey: 'selectedReplicationController',
+    loadingKey: 'replicationControllerDetailLoading',
+    args: ['default', 'rc-1', 'ctx-1'],
+    detail: { name: 'rc-1', namespace: 'default' },
+  },
+  {
     label: 'job',
     apiMethod: 'getJobDetail',
     clickMethod: 'handleJobClick',
@@ -105,10 +115,19 @@ describe('useUIStore', () => {
     useUIStore.getState().setStatefulSetDetailLoading(true)
     useUIStore.getState().setSelectedReplicaSet({ name: 'rs-1' })
     useUIStore.getState().setReplicaSetDetailLoading(true)
+    useUIStore.getState().setSelectedReplicationController({ name: 'rc-1' })
+    useUIStore.getState().setReplicationControllerDetailLoading(true)
     useUIStore.getState().setSelectedJob({ name: 'job-1' })
     useUIStore.getState().setJobDetailLoading(true)
     useUIStore.getState().setSelectedCronJob({ name: 'cron-1' })
     useUIStore.getState().setCronJobDetailLoading(true)
+    useUIStore.getState().setSelectedHPA({ name: 'hpa-1' })
+    useUIStore.getState().setSelectedPodDisruptionBudget({ name: 'pdb-1' })
+    useUIStore.getState().setSelectedResourceQuota({ name: 'quota-1' })
+    useUIStore.getState().setSelectedLimitRange({ name: 'limits-1' })
+    useUIStore.getState().setSelectedPersistentVolume({ name: 'pv-1' })
+    useUIStore.getState().setSelectedPersistentVolumeClaim({ name: 'pvc-1' })
+    useUIStore.getState().setSelectedStorageClass({ name: 'sc-1' })
     useUIStore.getState().setIsCreateModalOpen(true)
     useUIStore.getState().setIsYamlEditorOpen(true, 'edit', { kind: 'Pod', namespace: 'default', name: 'pod-1' })
 
@@ -120,8 +139,30 @@ describe('useUIStore', () => {
     assert.equal(state.selectedResourceType, 'services')
     assert.equal(state.nsSearchText, 'prod')
     assert.equal(state.selectedPodForLogs, pod)
+    assert.deepEqual(state.selectedHPA, { name: 'hpa-1' })
+    assert.deepEqual(state.selectedPodDisruptionBudget, { name: 'pdb-1' })
+    assert.deepEqual(state.selectedResourceQuota, { name: 'quota-1' })
+    assert.deepEqual(state.selectedLimitRange, { name: 'limits-1' })
+    assert.deepEqual(state.selectedPersistentVolume, { name: 'pv-1' })
+    assert.deepEqual(state.selectedPersistentVolumeClaim, { name: 'pvc-1' })
+    assert.deepEqual(state.selectedStorageClass, { name: 'sc-1' })
     assert.equal(state.isCreateModalOpen, true)
     assert.deepEqual(state.yamlEditorResource, { kind: 'Pod', namespace: 'default', name: 'pod-1' })
+
+    useUIStore.getState().handleCloseHPADetail()
+    assert.equal(useUIStore.getState().selectedHPA, null)
+    useUIStore.getState().handleClosePodDisruptionBudgetDetail()
+    assert.equal(useUIStore.getState().selectedPodDisruptionBudget, null)
+    useUIStore.getState().handleCloseResourceQuotaDetail()
+    assert.equal(useUIStore.getState().selectedResourceQuota, null)
+    useUIStore.getState().handleCloseLimitRangeDetail()
+    assert.equal(useUIStore.getState().selectedLimitRange, null)
+    useUIStore.getState().handleClosePersistentVolumeDetail()
+    assert.equal(useUIStore.getState().selectedPersistentVolume, null)
+    useUIStore.getState().handleClosePersistentVolumeClaimDetail()
+    assert.equal(useUIStore.getState().selectedPersistentVolumeClaim, null)
+    useUIStore.getState().handleCloseStorageClassDetail()
+    assert.equal(useUIStore.getState().selectedStorageClass, null)
   })
 
   it('sorts and filters data with the current sort settings', async () => {

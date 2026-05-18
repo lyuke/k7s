@@ -1,14 +1,22 @@
 import { useEffect, useRef, useState } from 'react'
-import type { PodInfo } from '../../../../shared/types'
-import { isWebMode, k8sApi } from '../../api/provider'
+import type { PortForwardSessionInfo, PortForwardTargetKind } from '../../../../shared/types'
+import { k8sApi } from '../../api/provider'
+
+export type PortForwardTarget = {
+  kind: PortForwardTargetKind
+  name: string
+  namespace: string
+  ports?: number[]
+}
 
 interface PortForwardModalProps {
-  pod: PodInfo | null
+  target: PortForwardTarget | null
   contextId: string
+  onSessionStarted?: (session: PortForwardSessionInfo) => void
   onClose: () => void
 }
 
-export const PortForwardModal = ({ pod, contextId, onClose }: PortForwardModalProps) => {
+export const PortForwardModal = ({ target, contextId, onSessionStarted, onClose }: PortForwardModalProps) => {
   const [targetPort, setTargetPort] = useState(8080)
   const [localPort, setLocalPort] = useState(8080)
   const [status, setStatus] = useState<string>('等待启动')
@@ -18,7 +26,7 @@ export const PortForwardModal = ({ pod, contextId, onClose }: PortForwardModalPr
   const sessionIdRef = useRef<string | null>(null)
 
   useEffect(() => {
-    if (!pod) {
+    if (!target) {
       setTargetPort(8080)
       setLocalPort(8080)
       setStatus('等待启动')
@@ -28,15 +36,14 @@ export const PortForwardModal = ({ pod, contextId, onClose }: PortForwardModalPr
       return
     }
 
-    const firstContainer = pod.containers?.[0]
-    const inferredPort = firstContainer && /\:(\d+)(?:\/|$)/.exec(firstContainer.image) ? Number(/\:(\d+)(?:\/|$)/.exec(firstContainer.image)?.[1]) : 8080
+    const inferredPort = target.ports?.[0] ?? 8080
     setTargetPort(inferredPort || 8080)
     setLocalPort(inferredPort || 8080)
     setStatus('等待启动')
     setError(null)
     setIsLoading(false)
     setIsRunning(false)
-  }, [pod])
+  }, [target])
 
   useEffect(() => {
     return k8sApi.onPushEvent((event) => {
@@ -55,22 +62,9 @@ export const PortForwardModal = ({ pod, contextId, onClose }: PortForwardModalPr
     })
   }, [])
 
-  useEffect(() => {
-    return () => {
-      const currentSession = sessionIdRef.current
-      if (currentSession) {
-        void k8sApi.stopPortForward(currentSession)
-      }
-    }
-  }, [])
-
-  if (!pod) return null
+  if (!target) return null
 
   const handleStart = async () => {
-    if (isWebMode) {
-      setError('端口转发仅在桌面模式可用')
-      return
-    }
     if (!targetPort || targetPort < 1) {
       setError('请输入有效的目标端口')
       return
@@ -82,8 +76,11 @@ export const PortForwardModal = ({ pod, contextId, onClose }: PortForwardModalPr
 
     try {
       const result = await k8sApi.startPortForward(contextId, {
-        namespace: pod.namespace,
-        podName: pod.name,
+        namespace: target.namespace,
+        targetKind: target.kind,
+        targetName: target.name,
+        podName: target.kind === 'Pod' ? target.name : undefined,
+        serviceName: target.kind === 'Service' ? target.name : undefined,
         targetPort,
         localPort,
       })
@@ -92,6 +89,22 @@ export const PortForwardModal = ({ pod, contextId, onClose }: PortForwardModalPr
       setStatus(result.message || `127.0.0.1:${result.localPort}`)
       setIsLoading(false)
       setIsRunning(true)
+      onSessionStarted?.({
+        sessionId: result.sessionId,
+        contextId,
+        name: target.name,
+        targetKind: target.kind,
+        targetName: target.name,
+        namespace: target.namespace,
+        podName: target.kind === 'Pod' ? target.name : '',
+        serviceName: target.kind === 'Service' ? target.name : undefined,
+        localPort: result.localPort,
+        targetPort,
+        protocol: 'TCP',
+        state: 'running',
+        startedAt: new Date().toISOString(),
+        message: result.message || `127.0.0.1:${result.localPort} -> ${targetPort}`,
+      })
     } catch (err) {
       setIsLoading(false)
       setIsRunning(false)
@@ -112,7 +125,7 @@ export const PortForwardModal = ({ pod, contextId, onClose }: PortForwardModalPr
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content port-forward-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
-          <h2>端口转发 - {pod.name}</h2>
+          <h2>端口转发 - {target.kind}/{target.name}</h2>
           <button className="modal-close" onClick={onClose}>×</button>
         </div>
         <div className="exec-toolbar">
