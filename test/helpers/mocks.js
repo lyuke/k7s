@@ -43,6 +43,7 @@ export const resetWindowState = () => {
   }
   delete globalThis.window.k7s
   delete globalThis.window.k8sTerm
+  delete globalThis.window.showOpenFilePicker
 }
 
 export const resetDocumentState = () => {

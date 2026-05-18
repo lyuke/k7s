@@ -106,10 +106,15 @@ describe('renderer hooks', () => {
     const hook = readHook(() => useTerminal('ctx-1'))
     hook.toggleTerminal()
     useTerminalStore.getState().setTerminalContainerRef({ current: { id: 'terminal-root' } })
+    hook.openTerminalWithCommand('kubectl get pods')
 
     assert.equal(hook.showTerminal, false)
     assert.deepEqual(hook.terminalContainerRef, { current: null })
     assert.equal(useTerminalStore.getState().showTerminal, true)
+    assert.deepEqual(useTerminalStore.getState().pendingCommand, { id: 1, command: 'kubectl get pods' })
     assert.deepEqual(useTerminalStore.getState().terminalContainerRef, { current: { id: 'terminal-root' } })
+
+    useTerminalStore.getState().clearPendingCommand(1)
+    assert.equal(useTerminalStore.getState().pendingCommand, null)
   })
 })

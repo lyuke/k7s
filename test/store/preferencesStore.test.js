@@ -10,6 +10,7 @@ const initialPrefs = {
   customNames: { 'ctx-1': 'custom-dev' },
   groups: [{ id: 'group-1', name: 'Team A', items: ['ctx-1'] }],
   ungrouped: ['ctx-2', 'ctx-3'],
+  theme: 'aurora',
 }
 
 beforeEach(() => {
@@ -37,6 +38,7 @@ describe('usePreferencesStore', () => {
     usePreferencesStore.getState().setIsAddingGroup(true)
     usePreferencesStore.getState().setNewGroupName('Ops')
     usePreferencesStore.getState().setDragging({ id: 'ctx-2', fromGroupId: '__ungrouped__' })
+    usePreferencesStore.getState().setAppTheme('forest')
 
     const state = usePreferencesStore.getState()
     assert.equal(state.editingContextId, 'ctx-1')
@@ -44,6 +46,7 @@ describe('usePreferencesStore', () => {
     assert.equal(state.isAddingGroup, true)
     assert.equal(state.newGroupName, 'Ops')
     assert.deepEqual(state.dragging, { id: 'ctx-2', fromGroupId: '__ungrouped__' })
+    assert.equal(state.appTheme, 'forest')
   })
 
   it('loads and updates context preferences from the API', async () => {
@@ -57,9 +60,30 @@ describe('usePreferencesStore', () => {
 
     await usePreferencesStore.getState().loadContextPrefs()
     assert.deepEqual(usePreferencesStore.getState().contextPrefs, initialPrefs)
+    assert.equal(usePreferencesStore.getState().appTheme, 'aurora')
 
     await usePreferencesStore.getState().updateContextName('ctx-1', 'renamed')
     assert.equal(usePreferencesStore.getState().contextPrefs.customNames['ctx-1'], 'renamed')
+  })
+
+  it('persists the selected app theme through preferences', async () => {
+    let selectedTheme = null
+
+    Object.assign(k8sApi, {
+      updateAppTheme: async (theme) => {
+        selectedTheme = theme
+        return {
+          ...initialPrefs,
+          theme,
+        }
+      },
+    })
+
+    await usePreferencesStore.getState().updateAppTheme('ember')
+
+    assert.equal(selectedTheme, 'ember')
+    assert.equal(usePreferencesStore.getState().appTheme, 'ember')
+    assert.equal(usePreferencesStore.getState().contextPrefs.theme, 'ember')
   })
 
   it('submits renames, trims whitespace, and ignores empty edit sessions', async () => {

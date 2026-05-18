@@ -1,10 +1,11 @@
 import { create } from 'zustand'
-import type { ContextRecord, ContextGroup, ContextPrefs } from '../../../shared/types'
+import type { AppThemeName, ContextRecord, ContextGroup, ContextPrefs } from '../../../shared/types'
 import { k8sApi } from '../api/provider'
 
 interface PreferencesState {
   // State
   contextPrefs: ContextPrefs | null
+  appTheme: AppThemeName
   editingContextId: string | null
   editingName: string
   isAddingGroup: boolean
@@ -13,6 +14,7 @@ interface PreferencesState {
 
   // Actions
   setContextPrefs: (prefs: ContextPrefs | null) => void
+  setAppTheme: (theme: AppThemeName) => void
   setEditingContextId: (id: string | null) => void
   setEditingName: (name: string) => void
   setIsAddingGroup: (adding: boolean) => void
@@ -25,6 +27,7 @@ interface PreferencesState {
   // Async actions
   loadContextPrefs: () => Promise<void>
   updateContextName: (id: string, name: string) => Promise<void>
+  updateAppTheme: (theme: AppThemeName) => Promise<void>
   submitRename: () => Promise<void>
   handleRenameKey: (e: React.KeyboardEvent<HTMLInputElement>) => void
   beginRename: (id: string, current: string) => void
@@ -43,6 +46,7 @@ interface PreferencesState {
 export const usePreferencesStore = create<PreferencesState>((set, get) => ({
   // Initial state
   contextPrefs: null,
+  appTheme: 'aurora',
   editingContextId: null,
   editingName: '',
   isAddingGroup: false,
@@ -50,7 +54,8 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => ({
   dragging: null,
 
   // Setters
-  setContextPrefs: (prefs) => set({ contextPrefs: prefs }),
+  setContextPrefs: (prefs) => set((state) => ({ contextPrefs: prefs, appTheme: prefs?.theme ?? state.appTheme })),
+  setAppTheme: (theme) => set({ appTheme: theme }),
   setEditingContextId: (id) => set({ editingContextId: id }),
   setEditingName: (name) => set({ editingName: name }),
   setIsAddingGroup: (adding) => set({ isAddingGroup: adding }),
@@ -67,12 +72,18 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => ({
   // Async actions
   loadContextPrefs: async () => {
     const prefs = await k8sApi.getContextPrefs()
-    set({ contextPrefs: prefs })
+    set({ contextPrefs: prefs, appTheme: prefs.theme })
   },
 
   updateContextName: async (id, name) => {
     const updated = await k8sApi.updateContextName(id, name)
     set({ contextPrefs: updated })
+  },
+
+  updateAppTheme: async (theme) => {
+    set({ appTheme: theme })
+    const updated = await k8sApi.updateAppTheme(theme)
+    set({ contextPrefs: updated, appTheme: updated.theme })
   },
 
   submitRename: async () => {

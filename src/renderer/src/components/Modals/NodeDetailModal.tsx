@@ -1,5 +1,7 @@
 import type { EventInfo, NodeInfo, NodeMetrics, PodInfo } from '../../../../shared/types'
 
+type NodeActionLoading = 'cordon' | 'uncordon' | 'drain' | 'delete'
+
 interface NodeDetailModalProps {
   node: NodeInfo | null
   loading: boolean
@@ -7,10 +9,36 @@ interface NodeDetailModalProps {
   metricsLoading: boolean
   pods: PodInfo[]
   events: EventInfo[]
+  actionLoading?: NodeActionLoading | null
+  onEnterNode?: (node: NodeInfo) => void
+  onEnterPod?: (pod: PodInfo) => void
+  onToggleScheduling?: (node: NodeInfo) => void | Promise<void>
+  onDrainNode?: (node: NodeInfo) => void | Promise<void>
+  onDescribeNode?: (node: NodeInfo) => void | Promise<void>
+  onEditMetadata?: (node: NodeInfo) => void | Promise<void>
+  onEditYaml?: (node: NodeInfo) => void
+  onDeleteNode?: (node: NodeInfo) => void | Promise<void>
   onClose: () => void
 }
 
-export const NodeDetailModal = ({ node, loading, metrics, metricsLoading, pods, events, onClose }: NodeDetailModalProps) => {
+export const NodeDetailModal = ({
+  node,
+  loading,
+  metrics,
+  metricsLoading,
+  pods,
+  events,
+  actionLoading = null,
+  onEnterNode,
+  onEnterPod,
+  onToggleScheduling,
+  onDrainNode,
+  onDescribeNode,
+  onEditMetadata,
+  onEditYaml,
+  onDeleteNode,
+  onClose,
+}: NodeDetailModalProps) => {
   if (!node && !loading) return null
 
   const getInternalIP = () => {
@@ -75,13 +103,24 @@ export const NodeDetailModal = ({ node, loading, metrics, metricsLoading, pods, 
   }) ?? []
 
   const warningEvents = events.filter((event) => event.type === 'Warning')
+  const schedulingAction: NodeActionLoading = node?.unschedulable ? 'uncordon' : 'cordon'
+  const actionBusy = actionLoading !== null
+  const hasNodeActions = Boolean(onToggleScheduling || onDrainNode || onDescribeNode || onEditMetadata || onEditYaml || onDeleteNode)
+  const schedulingStatus = node?.unschedulable ? 'SchedulingDisabled' : 'SchedulingEnabled'
 
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content node-detail-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h2>节点详情</h2>
-          <button className="modal-close" onClick={onClose}>×</button>
+          <div className="modal-header-actions">
+            {node && onEnterNode && (
+              <button className="log-viewer-btn shell-btn" onClick={() => onEnterNode(node)}>
+                进入节点
+              </button>
+            )}
+            <button className="modal-close" onClick={onClose}>×</button>
+          </div>
         </div>
         {loading ? (
           <div className="modal-loading">加载中...</div>
@@ -111,11 +150,77 @@ export const NodeDetailModal = ({ node, loading, metrics, metricsLoading, pods, 
                   <span className="detail-value">{node.age}</span>
                 </div>
                 <div className="detail-item">
-                  <span className="detail-label">不可调度</span>
-                  <span className="detail-value">{node.unschedulable ? '是' : '否'}</span>
+                  <span className="detail-label">调度状态</span>
+                  <span className={`detail-value status ${node.unschedulable ? 'scheduling-disabled' : 'ok'}`}>
+                    {schedulingStatus}
+                  </span>
                 </div>
               </div>
             </div>
+
+            {hasNodeActions && (
+              <div className="detail-section node-actions-section">
+                <div className="detail-section-header">
+                  <div className="detail-section-title">节点操作</div>
+                  <div className="node-action-bar">
+                    {onToggleScheduling && (
+                      <button
+                        className="action-btn cordon-btn"
+                        disabled={actionBusy}
+                        onClick={() => onToggleScheduling(node)}
+                      >
+                        {actionLoading === schedulingAction ? '处理中...' : node.unschedulable ? 'Uncordon' : 'Cordon'}
+                      </button>
+                    )}
+                    {onDrainNode && (
+                      <button
+                        className="action-btn drain-btn"
+                        disabled={actionBusy}
+                        onClick={() => onDrainNode(node)}
+                      >
+                        {actionLoading === 'drain' ? '处理中...' : 'Drain'}
+                      </button>
+                    )}
+                    {onDescribeNode && (
+                      <button
+                        className="action-btn describe-btn"
+                        disabled={actionBusy}
+                        onClick={() => onDescribeNode(node)}
+                      >
+                        Describe
+                      </button>
+                    )}
+                    {onEditMetadata && (
+                      <button
+                        className="action-btn metadata-btn"
+                        disabled={actionBusy}
+                        onClick={() => onEditMetadata(node)}
+                      >
+                        Meta
+                      </button>
+                    )}
+                    {onEditYaml && (
+                      <button
+                        className="action-btn yaml-btn"
+                        disabled={actionBusy}
+                        onClick={() => onEditYaml(node)}
+                      >
+                        YAML
+                      </button>
+                    )}
+                    {onDeleteNode && (
+                      <button
+                        className="action-btn delete-btn"
+                        disabled={actionBusy}
+                        onClick={() => onDeleteNode(node)}
+                      >
+                        {actionLoading === 'delete' ? '处理中...' : '删除'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
 
             <div className="detail-section">
               <div className="detail-section-title">报错信息</div>
@@ -259,6 +364,7 @@ export const NodeDetailModal = ({ node, loading, metrics, metricsLoading, pods, 
                     <div>状态</div>
                     <div>重启</div>
                     <div>存活时间</div>
+                    <div>操作</div>
                   </div>
                   {pods.map((pod) => (
                     <div key={`${pod.namespace}-${pod.name}`} className="conditions-row">
@@ -267,6 +373,15 @@ export const NodeDetailModal = ({ node, loading, metrics, metricsLoading, pods, 
                       <div className={`status ${pod.status === 'Running' ? 'ok' : 'warn'}`}>{pod.status}</div>
                       <div>{pod.restarts}</div>
                       <div>{pod.age}</div>
+                      <div>
+                        {onEnterPod ? (
+                          <button className="action-btn shell-btn" onClick={() => onEnterPod(pod)}>
+                            进入
+                          </button>
+                        ) : (
+                          '-'
+                        )}
+                      </div>
                     </div>
                   ))}
                 </div>

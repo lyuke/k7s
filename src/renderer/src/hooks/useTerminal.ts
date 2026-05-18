@@ -5,11 +5,13 @@ export const useTerminal = (selectedId: string) => {
   const showTerminal = useTerminalStore((s) => s.showTerminal)
   const terminalContainerRef = useTerminalStore((s) => s.terminalContainerRef)
   const toggleTerminal = useTerminalStore((s) => s.toggleTerminal)
+  const openTerminalWithCommand = useTerminalStore((s) => s.openTerminalWithCommand)
 
   return {
     showTerminal,
     terminalContainerRef,
     setShowTerminal: useTerminalStore((s) => s.setShowTerminal),
     toggleTerminal,
+    openTerminalWithCommand,
   }
 }

@@ -43,6 +43,10 @@ interface UIState {
   selectedReplicaSet: import('../../../shared/types').ReplicaSetInfo | null
   replicaSetDetailLoading: boolean
 
+  // ReplicationController modal
+  selectedReplicationController: import('../../../shared/types').ReplicationControllerInfo | null
+  replicationControllerDetailLoading: boolean
+
   // Job modal
   selectedJob: import('../../../shared/types').JobInfo | null
   jobDetailLoading: boolean
@@ -50,6 +54,19 @@ interface UIState {
   // CronJob modal
   selectedCronJob: import('../../../shared/types').CronJobInfo | null
   cronJobDetailLoading: boolean
+
+  // HPA modal
+  selectedHPA: import('../../../shared/types').HPAInfo | null
+
+  // Policy and quota modals
+  selectedPodDisruptionBudget: import('../../../shared/types').PodDisruptionBudgetInfo | null
+  selectedResourceQuota: import('../../../shared/types').ResourceQuotaInfo | null
+  selectedLimitRange: import('../../../shared/types').LimitRangeInfo | null
+
+  // Storage modals
+  selectedPersistentVolume: import('../../../shared/types').PersistentVolumeInfo | null
+  selectedPersistentVolumeClaim: import('../../../shared/types').PersistentVolumeClaimInfo | null
+  selectedStorageClass: import('../../../shared/types').StorageClassInfo | null
 
   // Create resource modal
   isCreateModalOpen: boolean
@@ -86,10 +103,19 @@ interface UIState {
   setStatefulSetDetailLoading: (loading: boolean) => void
   setSelectedReplicaSet: (rs: import('../../../shared/types').ReplicaSetInfo | null) => void
   setReplicaSetDetailLoading: (loading: boolean) => void
+  setSelectedReplicationController: (rc: import('../../../shared/types').ReplicationControllerInfo | null) => void
+  setReplicationControllerDetailLoading: (loading: boolean) => void
   setSelectedJob: (job: import('../../../shared/types').JobInfo | null) => void
   setJobDetailLoading: (loading: boolean) => void
   setSelectedCronJob: (cj: import('../../../shared/types').CronJobInfo | null) => void
   setCronJobDetailLoading: (loading: boolean) => void
+  setSelectedHPA: (hpa: import('../../../shared/types').HPAInfo | null) => void
+  setSelectedPodDisruptionBudget: (pdb: import('../../../shared/types').PodDisruptionBudgetInfo | null) => void
+  setSelectedResourceQuota: (quota: import('../../../shared/types').ResourceQuotaInfo | null) => void
+  setSelectedLimitRange: (limitRange: import('../../../shared/types').LimitRangeInfo | null) => void
+  setSelectedPersistentVolume: (pv: import('../../../shared/types').PersistentVolumeInfo | null) => void
+  setSelectedPersistentVolumeClaim: (pvc: import('../../../shared/types').PersistentVolumeClaimInfo | null) => void
+  setSelectedStorageClass: (storageClass: import('../../../shared/types').StorageClassInfo | null) => void
   setIsCreateModalOpen: (open: boolean) => void
   setIsYamlEditorOpen: (open: boolean, mode?: 'view' | 'edit' | 'create', resource?: { kind: string; namespace: string; name: string } | null) => void
 
@@ -113,10 +139,19 @@ interface UIState {
   handleCloseStatefulSetDetail: () => void
   handleReplicaSetClick: (namespace: string, name: string, contextId: string) => Promise<void>
   handleCloseReplicaSetDetail: () => void
+  handleReplicationControllerClick: (namespace: string, name: string, contextId: string) => Promise<void>
+  handleCloseReplicationControllerDetail: () => void
   handleJobClick: (namespace: string, name: string, contextId: string) => Promise<void>
   handleCloseJobDetail: () => void
   handleCronJobClick: (namespace: string, name: string, contextId: string) => Promise<void>
   handleCloseCronJobDetail: () => void
+  handleCloseHPADetail: () => void
+  handleClosePodDisruptionBudgetDetail: () => void
+  handleCloseResourceQuotaDetail: () => void
+  handleCloseLimitRangeDetail: () => void
+  handleClosePersistentVolumeDetail: () => void
+  handleClosePersistentVolumeClaimDetail: () => void
+  handleCloseStorageClassDetail: () => void
 }
 
 export const useUIStore = create<UIState>((set, get) => ({
@@ -143,10 +178,19 @@ export const useUIStore = create<UIState>((set, get) => ({
   statefulSetDetailLoading: false,
   selectedReplicaSet: null,
   replicaSetDetailLoading: false,
+  selectedReplicationController: null,
+  replicationControllerDetailLoading: false,
   selectedJob: null,
   jobDetailLoading: false,
   selectedCronJob: null,
   cronJobDetailLoading: false,
+  selectedHPA: null,
+  selectedPodDisruptionBudget: null,
+  selectedResourceQuota: null,
+  selectedLimitRange: null,
+  selectedPersistentVolume: null,
+  selectedPersistentVolumeClaim: null,
+  selectedStorageClass: null,
   isCreateModalOpen: false,
   isYamlEditorOpen: false,
   yamlEditorMode: 'view' as 'view' | 'edit' | 'create',
@@ -175,10 +219,19 @@ export const useUIStore = create<UIState>((set, get) => ({
   setStatefulSetDetailLoading: (loading) => set({ statefulSetDetailLoading: loading }),
   setSelectedReplicaSet: (rs) => set({ selectedReplicaSet: rs }),
   setReplicaSetDetailLoading: (loading) => set({ replicaSetDetailLoading: loading }),
+  setSelectedReplicationController: (rc) => set({ selectedReplicationController: rc }),
+  setReplicationControllerDetailLoading: (loading) => set({ replicationControllerDetailLoading: loading }),
   setSelectedJob: (job) => set({ selectedJob: job }),
   setJobDetailLoading: (loading) => set({ jobDetailLoading: loading }),
   setSelectedCronJob: (cj) => set({ selectedCronJob: cj }),
   setCronJobDetailLoading: (loading) => set({ cronJobDetailLoading: loading }),
+  setSelectedHPA: (hpa) => set({ selectedHPA: hpa }),
+  setSelectedPodDisruptionBudget: (pdb) => set({ selectedPodDisruptionBudget: pdb }),
+  setSelectedResourceQuota: (quota) => set({ selectedResourceQuota: quota }),
+  setSelectedLimitRange: (limitRange) => set({ selectedLimitRange: limitRange }),
+  setSelectedPersistentVolume: (pv) => set({ selectedPersistentVolume: pv }),
+  setSelectedPersistentVolumeClaim: (pvc) => set({ selectedPersistentVolumeClaim: pvc }),
+  setSelectedStorageClass: (storageClass) => set({ selectedStorageClass: storageClass }),
   setIsCreateModalOpen: (open) => set({ isCreateModalOpen: open }),
   setIsYamlEditorOpen: (open, mode = 'view', resource = null) => set({
     isYamlEditorOpen: open,
@@ -209,6 +262,8 @@ export const useUIStore = create<UIState>((set, get) => ({
         cmp = aVal.localeCompare(bVal)
       } else if (typeof aVal === 'number' && typeof bVal === 'number') {
         cmp = aVal - bVal
+      } else if (typeof aVal === 'boolean' && typeof bVal === 'boolean') {
+        cmp = Number(aVal) - Number(bVal)
       }
       return sortDirection === 'asc' ? cmp : -cmp
     })
@@ -347,6 +402,24 @@ export const useUIStore = create<UIState>((set, get) => ({
     set({ selectedReplicaSet: null, replicaSetDetailLoading: false })
   },
 
+  // ReplicationController handlers
+  handleReplicationControllerClick: async (namespace, name, contextId) => {
+    if (!contextId) return
+    set({ replicationControllerDetailLoading: true, selectedReplicationController: null })
+    try {
+      const detail = await k8sApi.getReplicationControllerDetail(contextId, namespace, name)
+      set({ selectedReplicationController: detail })
+    } catch (err) {
+      console.error('获取ReplicationController详情失败:', err)
+    } finally {
+      set({ replicationControllerDetailLoading: false })
+    }
+  },
+
+  handleCloseReplicationControllerDetail: () => {
+    set({ selectedReplicationController: null, replicationControllerDetailLoading: false })
+  },
+
   // Job handlers
   handleJobClick: async (namespace, name, contextId) => {
     if (!contextId) return
@@ -381,5 +454,33 @@ export const useUIStore = create<UIState>((set, get) => ({
 
   handleCloseCronJobDetail: () => {
     set({ selectedCronJob: null, cronJobDetailLoading: false })
+  },
+
+  handleCloseHPADetail: () => {
+    set({ selectedHPA: null })
+  },
+
+  handleClosePodDisruptionBudgetDetail: () => {
+    set({ selectedPodDisruptionBudget: null })
+  },
+
+  handleCloseResourceQuotaDetail: () => {
+    set({ selectedResourceQuota: null })
+  },
+
+  handleCloseLimitRangeDetail: () => {
+    set({ selectedLimitRange: null })
+  },
+
+  handleClosePersistentVolumeDetail: () => {
+    set({ selectedPersistentVolume: null })
+  },
+
+  handleClosePersistentVolumeClaimDetail: () => {
+    set({ selectedPersistentVolumeClaim: null })
+  },
+
+  handleCloseStorageClassDetail: () => {
+    set({ selectedStorageClass: null })
   },
 }))

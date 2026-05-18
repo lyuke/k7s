@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { PodInfo } from '../../../../shared/types'
-import { isWebMode, k8sApi } from '../../api/provider'
+import { k8sApi } from '../../api/provider'
 
 interface PodExecModalProps {
   pod: PodInfo | null
@@ -88,10 +88,6 @@ export const PodExecModal = ({ pod, contextId, onClose }: PodExecModalProps) => 
   const containers = displayPod.containers ?? []
 
   const handleRun = async () => {
-    if (isWebMode) {
-      setError('Pod Exec 仅在桌面模式可用')
-      return
-    }
     if (!command.trim()) {
       setError('请输入要执行的命令')
       return

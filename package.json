@@ -6,6 +6,8 @@
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
+    "dev:web": "node bin/k7s.js web",
+    "dev:web:headless": "node bin/k7s.js web --no-window",
     "start": "electron-vite dev",
     "test": "node ./test/run-tests.js",
     "test:coverage": "node ./test/run-coverage.js",
