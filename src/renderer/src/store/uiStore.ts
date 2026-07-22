@@ -160,7 +160,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   sortField: '',
   sortDirection: 'asc' as SortDirection,
   refreshInterval: 30,
-  selectedResourceType: 'pods' as ResourceType,
+  selectedResourceType: 'nodes' as ResourceType,
   nsSearchText: '',
   selectedNode: null,
   nodeDetailLoading: false,

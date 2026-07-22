@@ -100,13 +100,18 @@ const createMockApi = (methods) => {
 
 const patchContentType = async (options) => {
   let contentType = ''
-  await options.middleware[0].pre({
+  const result = options.middleware[0].pre({
     setHeaderParam(name, value) {
       if (name === 'Content-Type') {
         contentType = value
       }
     },
   })
+  if (result && typeof result.toPromise === 'function') {
+    await result.toPromise()
+  } else {
+    await result
+  }
   return contentType
 }
 
@@ -1804,6 +1809,30 @@ describe('main kube operations', () => {
     assert.equal(await patchContentType(apps.__calls.patchNamespacedDeployment[0][1]), PatchStrategy.StrategicMergePatch)
     assert.equal(unsupported.success, false)
     assert.match(unsupported.message, /暂不支持 Apply example.com\/v1\/Widget/)
+  })
+
+  it('applies Node YAML with client-node compatible patch middleware', async () => {
+    const core = createMockApi({
+      patchNode: async () => ({ metadata: { name: 'node-1' } }),
+    })
+    setupApis({ core })
+
+    const kube = await importFresh('./src/main/kube.ts')
+    const result = await kube.applyYaml(CONTEXT_ID, [
+      'apiVersion: v1',
+      'kind: Node',
+      'metadata:',
+      '  name: node-1',
+      'spec:',
+      '  unschedulable: true',
+      '',
+    ].join('\n'))
+    const patchOptions = core.__calls.patchNode[0][1]
+    const middlewareResult = patchOptions.middleware[0].pre({ setHeaderParam() {} })
+
+    assert.equal(result.success, true)
+    assert.equal(await patchContentType(patchOptions), PatchStrategy.StrategicMergePatch)
+    assert.equal(typeof middlewareResult.toPromise, 'function')
   })
 
   it('lists latest Helm releases from metadata without exposing release payloads', async () => {

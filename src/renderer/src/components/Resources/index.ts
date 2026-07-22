@@ -1,1 +1,1 @@
-// Resource components will be added in future phases
+export { VirtualizedResourceTable } from './VirtualizedResourceTable'
