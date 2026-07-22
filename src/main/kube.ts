@@ -117,6 +117,7 @@ import {
   V2HorizontalPodAutoscaler,
   CoreV1Event,
   PatchStrategy,
+  setHeaderOptions,
 } from '@kubernetes/client-node'
 import { app } from 'electron'
 import fs from 'node:fs/promises'
@@ -955,16 +956,7 @@ type StoreData = {
 const DEFAULT_APP_THEME: AppThemeName = 'aurora'
 const APP_THEME_NAMES = new Set<AppThemeName>(['aurora', 'ocean', 'forest', 'ember', 'graphite'])
 
-const patchOptions = (strategy: string): any => ({
-  middleware: [{
-    pre: async (context: { setHeaderParam: (name: string, value: string) => void }) => {
-      context.setHeaderParam('Content-Type', strategy)
-      return context
-    },
-    post: async (context: any) => context,
-  }] as any,
-  middlewareMergeStrategy: 'append',
-})
+const patchOptions = (strategy: string): any => setHeaderOptions('Content-Type', strategy)
 
 const mergePatchOptions = () => patchOptions(PatchStrategy.MergePatch)
 const strategicMergePatchOptions = () => patchOptions(PatchStrategy.StrategicMergePatch)

@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { importFresh } from '../helpers/module.js'
 import { resetWindowState } from '../helpers/mocks.js'
 import { EmptyState, SortIcon } from '../../src/renderer/src/components/Clusters/index.ts'
+import { VirtualizedResourceTable } from '../../src/renderer/src/components/Resources/index.ts'
 import {
   ConfigMapForm,
   DeploymentForm,
@@ -112,6 +113,26 @@ describe('renderer components', () => {
     assert.match(configMapFormHtml, /Create ConfigMap/)
     assert.match(secretFormHtml, /Create Secret/)
     assert.match(ingressFormHtml, /Create Ingress/)
+  })
+
+  it('renders a bounded initial window for virtualized resource tables', () => {
+    const rows = Array.from({ length: 100 }, (_, index) => ({ id: `row-${index}` }))
+    const html = render(VirtualizedResourceTable, {
+      rows,
+      header: React.createElement('div', { className: 'table-head' }, 'Header'),
+      emptyState: React.createElement('div', { className: 'table-empty' }, 'No rows'),
+      getRowKey(row) {
+        return row.id
+      },
+      renderRow(row) {
+        return React.createElement('div', { className: 'table-row' }, row.id)
+      },
+    })
+
+    assert.match(html, />row-0</)
+    assert.match(html, />row-31</)
+    assert.doesNotMatch(html, />row-32</)
+    assert.doesNotMatch(html, />row-99</)
   })
 
   it('renders modal variants with representative data', () => {
@@ -287,9 +308,12 @@ describe('renderer components', () => {
     assert.match(nodeHtml, /节点详情/)
     assert.match(nodeHtml, /进入节点/)
     assert.match(nodeHtml, /节点操作/)
+    assert.match(nodeHtml, /Cordon/)
+    assert.match(nodeHtml, /Drain/)
     assert.match(nodeHtml, /Describe/)
     assert.match(nodeHtml, /Meta/)
     assert.match(nodeHtml, /YAML/)
+    assert.match(nodeHtml, /删除/)
     assert.match(podDetailHtml, /Pod 操作/)
     assert.match(podDetailHtml, /Shell/)
     assert.match(podDetailHtml, /Attach/)
@@ -349,7 +373,7 @@ describe('renderer components', () => {
       roles: 'worker',
       version: '1.29.0',
       age: '2d',
-      unschedulable: false,
+      unschedulable: true,
     }
     const clusterInitial = useClusterStore.getInitialState()
     const uiInitial = useUIStore.getInitialState()
@@ -438,13 +462,18 @@ describe('renderer components', () => {
       const html = render(app.default)
 
       assert.match(html, /node-1/)
-      assert.match(html, /Cordon/)
-      assert.match(html, /Drain/)
       assert.match(html, /Can-I/)
-      assert.match(html, /Describe/)
-      assert.match(html, /Meta/)
-      assert.match(html, /编辑 YAML/)
-      assert.match(html, /Delete/)
+      assert.match(html, /Label Nodes/)
+      assert.match(html, /选择 Node node-1/)
+      assert.match(html, /Disabled/)
+      assert.match(html, /设置/)
+      assert.doesNotMatch(html, /Top Nodes/)
+      assert.doesNotMatch(html, /Cordon/)
+      assert.doesNotMatch(html, /Drain/)
+      assert.doesNotMatch(html, /Describe/)
+      assert.doesNotMatch(html, /Meta/)
+      assert.doesNotMatch(html, /编辑 YAML/)
+      assert.doesNotMatch(html, /Delete/)
 
       Object.assign(clusterInitial, {
         contexts: [context],
@@ -467,13 +496,14 @@ describe('renderer components', () => {
       const podHtml = render(podApp.default)
 
       assert.match(podHtml, /pod-1/)
-      assert.match(podHtml, /Attach 到 Pod 主进程/)
-      assert.match(podHtml, /Describe/)
-      assert.match(podHtml, /Meta/)
-      assert.match(podHtml, /编辑 YAML/)
-      assert.match(podHtml, /删除 Pod/)
-      assert.match(podHtml, /Evict Pod/)
-      assert.match(podHtml, /强制删除 Pod/)
+      assert.match(podHtml, /Can-I/)
+      assert.doesNotMatch(podHtml, /Attach 到 Pod 主进程/)
+      assert.doesNotMatch(podHtml, /Describe/)
+      assert.doesNotMatch(podHtml, /Meta/)
+      assert.doesNotMatch(podHtml, /编辑 YAML/)
+      assert.doesNotMatch(podHtml, /删除 Pod/)
+      assert.doesNotMatch(podHtml, /Evict Pod/)
+      assert.doesNotMatch(podHtml, /强制删除 Pod/)
 
       const deployment = {
         name: 'web',

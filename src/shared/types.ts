@@ -1867,6 +1867,7 @@ export type AddContextsResult = {
 
 export type ResourceType =
   | 'overview'
+  | 'workloads'
   | 'componentstatuses'
   | 'apigroups'
   | 'apiresources'
@@ -1876,7 +1877,6 @@ export type ResourceType =
   | 'selfsubjectreviews'
   | 'selfsubjectaccessreviews'
   | 'selfsubjectrulesreviews'
-  | 'topnodes'
   | 'toppods'
   | 'topcontainers'
   | 'namespaces'

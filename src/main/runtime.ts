@@ -7,7 +7,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { Writable } from 'node:stream'
 import * as pty from 'node-pty'
-import { CoreV1Api, Exec, Log, Watch } from '@kubernetes/client-node'
+import { CoreV1Api, Exec, Log, PatchStrategy, Watch, setHeaderOptions } from '@kubernetes/client-node'
 import type {
   K7sPushEvent,
   DeleteResult,
@@ -714,6 +714,9 @@ const runKubectlCommand = async (
   })
 }
 
+const patchOptions = (strategy: string): any => setHeaderOptions('Content-Type', strategy)
+const mergePatchOptions = () => patchOptions(PatchStrategy.MergePatch)
+
 const runHelmCommand = async (
   contextId: string,
   args: string[],
@@ -1038,6 +1041,45 @@ const kubectlResourceTarget = (kind: string, name: string) => {
   return `${normalizedKind}/${normalizedName}`
 }
 
+const isNodeKind = (kind: string) => ['node', 'nodes'].includes(kind.trim().toLowerCase())
+
+const mutateNodeMetadata = async (
+  contextId: string,
+  name: string,
+  field: MetadataField,
+  key: string,
+  value: string,
+  remove: boolean,
+): Promise<UpdateResult> => {
+  const nodeName = name.trim()
+  if (!nodeName) {
+    return { success: false, message: '需要资源名称' }
+  }
+
+  const kubeConfig = await getConfiguredKubeConfig(contextId)
+  const api = kubeConfig.makeApiClient(CoreV1Api)
+  const patchBody = {
+    metadata: {
+      [field]: {
+        [key]: remove ? null : value,
+      },
+    },
+  }
+
+  try {
+    await api.patchNode({ name: nodeName, body: patchBody as any }, mergePatchOptions())
+    return {
+      success: true,
+      message: `Node ${nodeName} ${field === 'labels' ? 'Label' : 'Annotation'} 已${remove ? '删除' : '更新'}: ${key}`,
+    }
+  } catch (err) {
+    return {
+      success: false,
+      message: `更新Node元数据失败: ${err instanceof Error ? err.message : String(err)}`,
+    }
+  }
+}
+
 export const describeResource = async (
   contextId: string,
   kind: string,
@@ -1130,6 +1172,10 @@ export const mutateResourceMetadata = async (
 
   const command = field === 'annotations' ? 'annotate' : 'label'
   const mutation = remove ? `${metadataKey}-` : `${metadataKey}=${value}`
+  if (isNodeKind(kind)) {
+    return mutateNodeMetadata(contextId, name, field, metadataKey, value, remove)
+  }
+
   const args = [command, kubectlResourceTarget(kind, name), mutation, '--overwrite']
   const normalizedNamespace = namespace?.trim()
   if (normalizedNamespace && normalizedNamespace !== 'all') {

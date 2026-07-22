@@ -103,6 +103,7 @@ import {
 } from './components/Modals'
 import { isWebMode, k8sApi } from './api/provider'
 import { EmptyState, SortIcon } from './components/Clusters'
+import { VirtualizedResourceTable } from './components/Resources'
 
 type LoadState = 'idle' | 'loading' | 'ready' | 'error'
 type NoticeTone = 'info' | 'success' | 'error'
@@ -160,6 +161,16 @@ type MetadataMutationInput = {
   key: string
   value: string
   remove: boolean
+}
+type LabelMutationInput = Pick<MetadataMutationInput, 'key' | 'value' | 'remove'>
+type NodeLabelBatchModalProps = {
+  open: boolean
+  selectedNames: string[]
+  value: string
+  loading: boolean
+  onChange: (value: string) => void
+  onClose: () => void
+  onSubmit: () => void | Promise<void>
 }
 
 const formatSource = (source: string) => (source === 'default' ? '默认配置' : source)
@@ -220,6 +231,99 @@ const parseMetadataMutationInput = (input: string): MetadataMutationInput | null
   const key = mutation.slice(0, separatorIndex).trim()
   const value = mutation.slice(separatorIndex + 1)
   return key ? { field, key, value, remove: false } : null
+}
+
+const parseNodeLabelMutationInput = (input: string): LabelMutationInput[] | null => {
+  const tokens = input
+    .split(/[\s,]+/)
+    .map((token) => token.trim())
+    .filter(Boolean)
+    .filter((token) => !['label', 'labels'].includes(token.toLowerCase()))
+
+  if (tokens.length === 0) return null
+
+  const mutations = new Map<string, LabelMutationInput>()
+  for (const token of tokens) {
+    if (!token.includes('=') && token.endsWith('-')) {
+      const key = token.slice(0, -1).trim()
+      if (!key) return null
+      mutations.set(key, { key, value: '', remove: true })
+      continue
+    }
+
+    const separatorIndex = token.indexOf('=')
+    if (separatorIndex <= 0) return null
+    const key = token.slice(0, separatorIndex).trim()
+    const value = token.slice(separatorIndex + 1)
+    if (!key) return null
+    mutations.set(key, { key, value, remove: false })
+  }
+
+  return Array.from(mutations.values())
+}
+
+const NodeLabelBatchModal = ({
+  open,
+  selectedNames,
+  value,
+  loading,
+  onChange,
+  onClose,
+  onSubmit,
+}: NodeLabelBatchModalProps) => {
+  if (!open) return null
+
+  const previewNames = selectedNames.slice(0, 8)
+  const hiddenCount = Math.max(selectedNames.length - previewNames.length, 0)
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div
+        className="modal-content node-label-modal"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="modal-header">
+          <h2>批量修改 Node Label</h2>
+          <button type="button" className="modal-close" onClick={onClose}>×</button>
+        </div>
+        <div className="modal-body">
+          <div className="detail-section">
+            <div className="detail-section-title">目标 Node ({selectedNames.length})</div>
+            <div className="node-selection-list">
+              {previewNames.map((name) => (
+                <span key={name} className="node-selection-chip">{name}</span>
+              ))}
+              {hiddenCount > 0 && <span className="node-selection-chip more">+{hiddenCount}</span>}
+            </div>
+          </div>
+          <div className="detail-section">
+            <label className="form-label" htmlFor="node-label-batch-input">Labels</label>
+            <textarea
+              id="node-label-batch-input"
+              className="label-textarea"
+              value={value}
+              onChange={(event) => onChange(event.target.value)}
+              placeholder={'team=platform\nnode-role.kubernetes.io/worker=true'}
+              autoFocus
+            />
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button type="button" className="create-btn secondary" onClick={onClose} disabled={loading}>
+            取消
+          </button>
+          <button
+            type="button"
+            className="create-btn"
+            disabled={loading || selectedNames.length === 0}
+            onClick={() => void onSubmit()}
+          >
+            {loading ? '应用中...' : '应用 Label'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 const parseCanIInput = (input: string, defaultNamespace: string): CanIReviewRequest | null => {
@@ -352,6 +456,31 @@ const formatByteSize = (value?: number): string => {
   return `${Number.isInteger(amount) ? amount : Number(amount.toFixed(1))} ${unit[0]}`
 }
 
+const metricBarWidth = (value?: string, kind: 'cpu' | 'memory' | 'disk' = 'cpu'): number => {
+  if (!value || value === '-' || kind === 'disk') return 0
+  const rank = kind === 'memory' ? parseMemoryMetric(value) : parseCpuMetric(value)
+  if (!Number.isFinite(rank) || rank <= 0) return 0
+  const scale = kind === 'memory' ? 1024 ** 3 : 1000000000
+  return Math.max(10, Math.min(100, Math.round((rank / scale) * 18)))
+}
+
+const MetricUsageBar = ({
+  value,
+  kind = 'cpu',
+}: {
+  value?: string
+  kind?: 'cpu' | 'memory' | 'disk'
+}) => {
+  const width = metricBarWidth(value, kind)
+  const title = value && value !== '-' ? value : '未采集'
+
+  return (
+    <span className={`metric-bar ${width > 0 ? 'has-value' : 'empty'}`} title={title}>
+      <span className="metric-bar-fill" style={{ width: `${width}%` }} />
+    </span>
+  )
+}
+
 const configValuePreview = (value: string): string => {
   const normalized = value.replace(/\r\n/g, '\n')
   if (!normalized) return '(empty)'
@@ -400,66 +529,60 @@ const THEME_OPTIONS: ThemeOption[] = [
 
 const RESOURCE_TYPE_GROUPS: { title: string; items: { key: ResourceType; label: string }[] }[] = [
   {
-    title: '概览',
+    title: 'Overview',
     items: [
       { key: 'overview', label: 'Overview' },
-      { key: 'componentstatuses', label: 'ComponentStatus' },
-      { key: 'apigroups', label: 'APIGroup' },
-      { key: 'apiresources', label: 'APIResource' },
-      { key: 'serverversions', label: 'ServerVersion' },
-      { key: 'openidconfigs', label: 'OpenIDConfiguration' },
-      { key: 'apiserverhealth', label: 'APIServerHealth' },
     ],
   },
   {
-    title: '监控',
+    title: 'Node',
     items: [
-      { key: 'topnodes', label: 'Top Nodes' },
+      { key: 'nodes', label: 'Nodes' },
+    ],
+  },
+  {
+    title: 'Workloads',
+    items: [
+      { key: 'workloads', label: 'Overview' },
+      { key: 'pods', label: 'Pods' },
+      { key: 'deployments', label: 'Deployments' },
+      { key: 'daemonsets', label: 'Daemon Sets' },
+      { key: 'statefulsets', label: 'Stateful Sets' },
+      { key: 'replicasets', label: 'Replica Sets' },
+      { key: 'replicationcontrollers', label: 'Replication Controllers' },
+      { key: 'jobs', label: 'Jobs' },
+      { key: 'cronjobs', label: 'Cron Jobs' },
       { key: 'toppods', label: 'Top Pods' },
       { key: 'topcontainers', label: 'Top Containers' },
-    ],
-  },
-  {
-    title: '核心资源',
-    items: [
-      { key: 'namespaces', label: 'Namespace' },
-      { key: 'nodes', label: 'Node' },
-      { key: 'pods', label: 'Pod' },
-      { key: 'services', label: 'Service' },
-    ],
-  },
-  {
-    title: '工作负载',
-    items: [
-      { key: 'deployments', label: 'Deployment' },
-      { key: 'daemonsets', label: 'DaemonSet' },
-      { key: 'statefulsets', label: 'StatefulSet' },
-      { key: 'replicasets', label: 'ReplicaSet' },
-      { key: 'replicationcontrollers', label: 'ReplicationController' },
-      { key: 'controllerrevisions', label: 'ControllerRevision' },
-      { key: 'podtemplates', label: 'PodTemplate' },
-      { key: 'jobs', label: 'Job' },
-      { key: 'cronjobs', label: 'CronJob' },
-      { key: 'helmcharts', label: 'HelmChart' },
-      { key: 'helmreleases', label: 'HelmRelease' },
-      { key: 'helmrepositories', label: 'HelmRepository' },
+      { key: 'controllerrevisions', label: 'Controller Revisions' },
+      { key: 'podtemplates', label: 'Pod Templates' },
+      { key: 'helmcharts', label: 'Helm Charts' },
+      { key: 'helmreleases', label: 'Helm Releases' },
+      { key: 'helmrepositories', label: 'Helm Repositories' },
       { key: 'horizontalpodautoscalers', label: 'HPA' },
       { key: 'poddisruptionbudgets', label: 'PDB' },
-      { key: 'resourcequotas', label: 'ResourceQuota' },
-      { key: 'limitranges', label: 'LimitRange' },
-      { key: 'priorityclasses', label: 'PriorityClass' },
-      { key: 'runtimeclasses', label: 'RuntimeClass' },
     ],
   },
   {
-    title: '配置网络',
+    title: 'Config',
     items: [
-      { key: 'configmaps', label: 'ConfigMap' },
-      { key: 'secrets', label: 'Secret' },
-      { key: 'endpoints', label: 'Endpoints' },
-      { key: 'portforwards', label: 'PortForwarding' },
+      { key: 'configmaps', label: 'Config Maps' },
+      { key: 'secrets', label: 'Secrets' },
+      { key: 'serviceaccounts', label: 'Service Accounts' },
+      { key: 'resourcequotas', label: 'Resource Quotas' },
+      { key: 'limitranges', label: 'Limit Ranges' },
+      { key: 'priorityclasses', label: 'Priority Classes' },
+      { key: 'runtimeclasses', label: 'Runtime Classes' },
       { key: 'leases', label: 'Lease' },
       { key: 'leasecandidates', label: 'LeaseCandidate' },
+    ],
+  },
+  {
+    title: 'Network',
+    items: [
+      { key: 'services', label: 'Services' },
+      { key: 'endpoints', label: 'Endpoints' },
+      { key: 'portforwards', label: 'PortForwarding' },
       { key: 'ingresses', label: 'Ingress' },
       { key: 'ingressclasses', label: 'IngressClass' },
       { key: 'gatewayclasses', label: 'GatewayClass' },
@@ -474,6 +597,44 @@ const RESOURCE_TYPE_GROUPS: { title: string; items: { key: ResourceType; label: 
       { key: 'ipaddresses', label: 'IPAddress' },
       { key: 'servicecidrs', label: 'ServiceCIDR' },
       { key: 'endpointslices', label: 'EndpointSlice' },
+    ],
+  },
+  {
+    title: 'Storage',
+    items: [
+      { key: 'persistentvolumes', label: 'Persistent Volumes' },
+      { key: 'persistentvolumeclaims', label: 'Persistent Volume Claims' },
+      { key: 'storageclasses', label: 'Storage Classes' },
+      { key: 'volumeattributesclasses', label: 'VolumeAttributesClass' },
+      { key: 'csidrivers', label: 'CSIDriver' },
+      { key: 'csinodes', label: 'CSINode' },
+      { key: 'volumeattachments', label: 'VolumeAttachment' },
+      { key: 'csistoragecapacities', label: 'CSIStorageCapacity' },
+      { key: 'volumesnapshotclasses', label: 'VolumeSnapshotClass' },
+      { key: 'volumesnapshots', label: 'VolumeSnapshot' },
+      { key: 'volumesnapshotcontents', label: 'VolumeSnapshotContent' },
+      { key: 'deviceclasses', label: 'DeviceClass' },
+      { key: 'devicetaintrules', label: 'DeviceTaintRule' },
+      { key: 'resourceclaims', label: 'ResourceClaim' },
+      { key: 'resourceclaimtemplates', label: 'ResourceClaimTemplate' },
+      { key: 'resourceslices', label: 'ResourceSlice' },
+    ],
+  },
+  {
+    title: 'Namespace',
+    items: [
+      { key: 'namespaces', label: 'Namespaces' },
+    ],
+  },
+  {
+    title: 'System',
+    items: [
+      { key: 'componentstatuses', label: 'ComponentStatus' },
+      { key: 'apigroups', label: 'APIGroup' },
+      { key: 'apiresources', label: 'APIResource' },
+      { key: 'serverversions', label: 'ServerVersion' },
+      { key: 'openidconfigs', label: 'OpenIDConfiguration' },
+      { key: 'apiserverhealth', label: 'APIServerHealth' },
       { key: 'apiservices', label: 'APIService' },
       { key: 'mutatingwebhookconfigurations', label: 'MutatingWebhook' },
       { key: 'validatingwebhookconfigurations', label: 'ValidatingWebhook' },
@@ -488,28 +649,6 @@ const RESOURCE_TYPE_GROUPS: { title: string; items: { key: ResourceType; label: 
       { key: 'podcertificaterequests', label: 'PodCertificateRequest' },
       { key: 'storageversions', label: 'StorageVersion' },
       { key: 'storageversionmigrations', label: 'StorageVersionMigration' },
-    ],
-  },
-  {
-    title: '存储权限',
-    items: [
-      { key: 'persistentvolumes', label: 'PV' },
-      { key: 'persistentvolumeclaims', label: 'PVC' },
-      { key: 'storageclasses', label: 'StorageClass' },
-      { key: 'volumeattributesclasses', label: 'VolumeAttributesClass' },
-      { key: 'csidrivers', label: 'CSIDriver' },
-      { key: 'csinodes', label: 'CSINode' },
-      { key: 'volumeattachments', label: 'VolumeAttachment' },
-      { key: 'csistoragecapacities', label: 'CSIStorageCapacity' },
-      { key: 'volumesnapshotclasses', label: 'VolumeSnapshotClass' },
-      { key: 'volumesnapshots', label: 'VolumeSnapshot' },
-      { key: 'volumesnapshotcontents', label: 'VolumeSnapshotContent' },
-      { key: 'deviceclasses', label: 'DeviceClass' },
-      { key: 'devicetaintrules', label: 'DeviceTaintRule' },
-      { key: 'resourceclaims', label: 'ResourceClaim' },
-      { key: 'resourceclaimtemplates', label: 'ResourceClaimTemplate' },
-      { key: 'resourceslices', label: 'ResourceSlice' },
-      { key: 'serviceaccounts', label: 'ServiceAccount' },
       { key: 'roles', label: 'Role' },
       { key: 'rolebindings', label: 'RoleBinding' },
       { key: 'clusterroles', label: 'ClusterRole' },
@@ -522,14 +661,58 @@ const RESOURCE_TYPE_GROUPS: { title: string; items: { key: ResourceType; label: 
     ],
   },
   {
-    title: '事件',
+    title: 'Events',
     items: [
-      { key: 'events', label: 'Event' },
+      { key: 'events', label: 'Events' },
     ],
   },
 ]
 
 const RESOURCE_TYPES = RESOURCE_TYPE_GROUPS.flatMap((group) => group.items)
+
+const RESOURCE_GROUP_ICONS: Record<string, string> = {
+  Overview: '▦',
+  Node: '◎',
+  Workloads: '◈',
+  Config: '⚙',
+  Network: '↕',
+  Storage: '▰',
+  Namespace: '◇',
+  System: '◒',
+  Events: '!',
+  事件: '!',
+}
+
+const NAMESPACE_FILTER_EXCLUDED_TYPES = new Set<ResourceType>([
+  'overview',
+  'workloads',
+  'nodes',
+  'namespaces',
+  'componentstatuses',
+  'apigroups',
+  'apiresources',
+  'serverversions',
+  'openidconfigs',
+  'apiserverhealth',
+  'apiservices',
+  'priorityclasses',
+  'runtimeclasses',
+  'persistentvolumes',
+  'storageclasses',
+  'volumeattributesclasses',
+  'csidrivers',
+  'csinodes',
+  'volumeattachments',
+  'gatewayclasses',
+  'ingressclasses',
+  'clusterroles',
+  'clusterrolebindings',
+  'certificatesigningrequests',
+  'clustertrustbundles',
+  'storageversions',
+  'storageversionmigrations',
+  'customresourcedefinitions',
+])
 
 const formatContextMeta = (context: ContextRecord) => [
   formatSource(context.source),
@@ -537,6 +720,22 @@ const formatContextMeta = (context: ContextRecord) => [
   context.namespace ? `ns:${context.namespace}` : '',
   context.current ? '当前' : '',
 ].filter(Boolean).join(' · ')
+
+const getContextInitials = (name: string) => {
+  const normalized = name.trim()
+  if (!normalized) return 'K7'
+  const parts = normalized.split(/[-_\s.]+/).filter(Boolean)
+  const initials = parts.length > 1
+    ? parts.slice(0, 2).map((part) => part[0]).join('')
+    : normalized.slice(0, 2)
+  return initials.toUpperCase()
+}
+
+const getNodeWarningCount = (node: NodeInfo) => (
+  node.conditions?.filter((condition) => (
+    condition.type !== 'Ready' && condition.status !== 'False'
+  )).length ?? 0
+)
 
 interface ClusterCardProps {
   context: ContextRecord
@@ -896,6 +1095,10 @@ const App = () => {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [watchConnected, setWatchConnected] = useState(false)
   const [nodeActionLoading, setNodeActionLoading] = useState<NodeActionLoading | null>(null)
+  const [selectedNodeNames, setSelectedNodeNames] = useState<string[]>([])
+  const [isNodeLabelModalOpen, setIsNodeLabelModalOpen] = useState(false)
+  const [nodeLabelDraft, setNodeLabelDraft] = useState('')
+  const [nodeLabelLoading, setNodeLabelLoading] = useState(false)
   const [selectedPodForExec, setSelectedPodForExec] = useState<typeof pods[number] | null>(null)
   const [selectedPortForwardTarget, setSelectedPortForwardTarget] = useState<PortForwardTarget | null>(null)
   const [portForwardSessions, setPortForwardSessions] = useState<PortForwardSessionInfo[]>([])
@@ -998,8 +1201,21 @@ const App = () => {
     ? contextPrefs?.customNames[activeContext.id] ?? activeContext.name
     : '请选择集群'
   const selectedClusterName = activeContext?.cluster ?? selectedContextDisplayName
-  const currentResourceLabel = RESOURCE_TYPES.find((type) => type.key === selectedResourceType)?.label ?? 'Resource'
+  const currentResourceLabel = selectedResourceType === 'workloads'
+    ? 'Workloads Overview'
+    : RESOURCE_TYPES.find((type) => type.key === selectedResourceType)?.label ?? 'Resource'
+  const activeVersion = serverVersions[0]?.gitVersion ?? ''
+  const statusBarClusterLabel = activeContext
+    ? `${selectedContextDisplayName}${activeVersion ? ` (${activeVersion})` : ''}`
+    : 'No cluster selected'
+  const searchPlaceholder = `Search ${currentResourceLabel}...`
+  const showNamespaceFilter = !NAMESPACE_FILTER_EXCLUDED_TYPES.has(selectedResourceType)
   const hasClientShell = !isWebMode && typeof window !== 'undefined' && window.k7s?.platform === 'darwin'
+  const appClassName = [
+    'app',
+    hasClientShell ? 'client-shell-app' : '',
+  ].filter(Boolean).join(' ')
+  const selectedNodeNameSet = useMemo(() => new Set(selectedNodeNames), [selectedNodeNames])
 
   const filterNamespacedData = <T extends { namespace: string }>(data: T[]) => {
     if (!selectedNamespace) return data
@@ -1029,8 +1245,6 @@ const App = () => {
       return direction === 'asc' ? -diff : diff
     })
   }
-
-  const getTopNodes = () => sortTopMetricData(filterData(nodes), 'cpuUsage')
 
   const getTopPods = () => sortTopMetricData(filterData(filterNamespacedData(pods)), 'cpu')
 
@@ -1759,6 +1973,104 @@ const App = () => {
     await refreshSelectedContext(true)
     if (selectedNode?.name === nodeName) {
       await handleNodeClick(nodeName, selectedId)
+    }
+  }
+
+  const toggleNodeSelection = (nodeName: string) => {
+    setSelectedNodeNames((names) => (
+      names.includes(nodeName)
+        ? names.filter((name) => name !== nodeName)
+        : [...names, nodeName]
+    ))
+  }
+
+  const toggleVisibleNodeSelection = (visibleNodeNames: string[]) => {
+    if (visibleNodeNames.length === 0) return
+    setSelectedNodeNames((names) => {
+      const selected = new Set(names)
+      const allVisibleSelected = visibleNodeNames.every((name) => selected.has(name))
+      if (allVisibleSelected) {
+        const visibleNames = new Set(visibleNodeNames)
+        return names.filter((name) => !visibleNames.has(name))
+      }
+      for (const name of visibleNodeNames) {
+        selected.add(name)
+      }
+      return Array.from(selected)
+    })
+  }
+
+  const openNodeLabelModal = () => {
+    if (selectedNodeNames.length === 0) {
+      showNotice('error', '请先选择要修改 Label 的 Node')
+      return
+    }
+    setIsNodeLabelModalOpen(true)
+  }
+
+  const closeNodeLabelModal = () => {
+    if (nodeLabelLoading) return
+    setIsNodeLabelModalOpen(false)
+  }
+
+  const handleApplyNodeLabels = async () => {
+    if (!selectedId) return
+    const liveNodeNames = new Set(nodes.map((node) => node.name))
+    const targetNames = selectedNodeNames.filter((name) => liveNodeNames.has(name))
+    if (targetNames.length === 0) {
+      showNotice('error', '请先选择要修改 Label 的 Node')
+      return
+    }
+
+    const mutations = parseNodeLabelMutationInput(nodeLabelDraft)
+    if (!mutations) {
+      showNotice('error', '请输入 key=value，可用逗号、空格或换行分隔')
+      return
+    }
+
+    setNodeLabelLoading(true)
+    const failures: string[] = []
+    try {
+      for (const nodeName of targetNames) {
+        for (const mutation of mutations) {
+          const result = await k8sApi.mutateResourceMetadata(
+            selectedId,
+            'Node',
+            '',
+            nodeName,
+            'labels',
+            mutation.key,
+            mutation.value,
+            mutation.remove,
+          )
+          if (!result.success) {
+            failures.push(`${nodeName}: ${result.message || `${mutation.key} 更新失败`}`)
+          }
+        }
+      }
+
+      if (failures.length > 0) {
+        throw new Error(`部分 Node Label 更新失败: ${failures.slice(0, 3).join('；')}`)
+      }
+
+      const detailNodeName = selectedNode && targetNames.includes(selectedNode.name) ? selectedNode.name : ''
+      showNotice('success', `已更新 ${targetNames.length} 个 Node 的 ${mutations.length} 个 Label`)
+      setSelectedNodeNames([])
+      setNodeLabelDraft('')
+      setIsNodeLabelModalOpen(false)
+      void refreshSelectedContext(true)
+        .then(() => {
+          if (detailNodeName) {
+            return handleNodeClick(detailNodeName, selectedId)
+          }
+        })
+        .catch((err) => {
+          showNotice('error', err instanceof Error ? `Node Label 已更新，刷新失败: ${err.message}` : 'Node Label 已更新，刷新失败')
+        })
+    } catch (err) {
+      showNotice('error', err instanceof Error ? err.message : '批量更新 Node Label 失败')
+    } finally {
+      setNodeLabelLoading(false)
     }
   }
 
@@ -2745,15 +3057,15 @@ const App = () => {
     return ''
   }
 
-  const renderTableHead = (fields: TableField[], includeActions = false) => (
-    <div className="table-row table-head">
+  const renderTableHead = (fields: TableField[], includeActions = false, rowClassName = '') => (
+    <div className={['table-row', 'table-head', rowClassName].filter(Boolean).join(' ')}>
       {fields.map(({ label, field }) => (
         <div key={field} onClick={() => handleSort(field)}>
           {label}
           <SortIcon direction={sortField === field ? sortDirection : undefined} />
         </div>
       ))}
-      {includeActions && <div>操作</div>}
+      {includeActions && <div className="table-actions-head">操作</div>}
     </div>
   )
 
@@ -2896,6 +3208,15 @@ const App = () => {
     switch (selectedResourceType) {
       case 'overview':
         return events.length
+      case 'workloads':
+        return getVisibleNamespacedData(pods).length
+          + getVisibleNamespacedData(deployments).length
+          + getVisibleNamespacedData(daemonSets).length
+          + getVisibleNamespacedData(statefulSets).length
+          + getVisibleNamespacedData(replicaSets).length
+          + getVisibleNamespacedData(replicationControllers).length
+          + getVisibleNamespacedData(jobs).length
+          + getVisibleNamespacedData(cronJobs).length
       case 'componentstatuses':
         return getVisibleData(componentStatuses).length
       case 'apigroups':
@@ -2908,8 +3229,6 @@ const App = () => {
         return getVisibleData(openIDConfigurations).length
       case 'apiserverhealth':
         return getVisibleData(apiServerHealth).length
-      case 'topnodes':
-        return getVisibleData(nodes).length
       case 'toppods':
         return getVisibleNamespacedData(pods).length
       case 'topcontainers':
@@ -3182,6 +3501,10 @@ const App = () => {
     volumeSnapshots,
   ])
 
+  const currentResourceCountLabel = selectedResourceType === 'overview'
+    ? `${currentResourceCount} events`
+    : `${currentResourceCount} items`
+
   const warningEventsCount = useMemo(() => events.filter((event) => event.type === 'Warning').length, [events])
   const readyNodeCount = clusterHealth?.readyNodes ?? nodes.filter((node) => node.status === 'Ready').length
   const totalNodeCount = clusterHealth?.totalNodes ?? nodes.length
@@ -3225,6 +3548,21 @@ const App = () => {
     if (!selectedId) return
     void refreshSelectedContext()
   }, [selectedId, refreshAll])
+
+  useEffect(() => {
+    const liveNodeNames = new Set(nodes.map((node) => node.name))
+    setSelectedNodeNames((names) => {
+      const nextNames = names.filter((name) => liveNodeNames.has(name))
+      return nextNames.length === names.length ? names : nextNames
+    })
+  }, [nodes])
+
+  useEffect(() => {
+    if (selectedResourceType !== 'nodes') {
+      setSelectedNodeNames([])
+      setIsNodeLabelModalOpen(false)
+    }
+  }, [selectedResourceType])
 
   useEffect(() => {
     if (!selectedId || refreshInterval === 0) {
@@ -3318,6 +3656,149 @@ const App = () => {
     }
   }, [])
 
+  const renderWorkloadOverview = () => {
+    const visiblePods = getVisibleNamespacedData(pods)
+    const visibleDeployments = getVisibleNamespacedData(deployments)
+    const visibleDaemonSets = getVisibleNamespacedData(daemonSets)
+    const visibleStatefulSets = getVisibleNamespacedData(statefulSets)
+    const visibleReplicaSets = getVisibleNamespacedData(replicaSets)
+    const visibleReplicationControllers = getVisibleNamespacedData(replicationControllers)
+    const visibleJobs = getVisibleNamespacedData(jobs)
+    const visibleCronJobs = getVisibleNamespacedData(cronJobs)
+    const visibleRunningPods = visiblePods.filter((pod) => pod.status === 'Running').length
+    const visibleFailedPods = visiblePods.filter((pod) => pod.status === 'Failed').length
+    const readyDeployments = visibleDeployments.filter((deploy) => deploy.readyReplicas >= deploy.replicas).length
+    const readyDaemonSets = visibleDaemonSets.filter((ds) => ds.numberReady >= ds.desiredNumberScheduled).length
+    const readyStatefulSets = visibleStatefulSets.filter((sts) => sts.readyReplicas >= sts.replicas).length
+    const activeJobs = visibleJobs.filter((job) => job.active > 0).length
+    const suspendedCronJobs = visibleCronJobs.filter((cronJob) => cronJob.suspend).length
+    const workloadRows: {
+      key: ResourceType
+      label: string
+      count: number
+      health: string
+      tone: 'ok' | 'warn'
+    }[] = [
+      {
+        key: 'pods',
+        label: 'Pods',
+        count: visiblePods.length,
+        health: `Running ${visibleRunningPods} · Failed ${visibleFailedPods}`,
+        tone: visibleFailedPods > 0 ? 'warn' : 'ok',
+      },
+      {
+        key: 'deployments',
+        label: 'Deployments',
+        count: visibleDeployments.length,
+        health: `${readyDeployments}/${visibleDeployments.length} ready`,
+        tone: readyDeployments === visibleDeployments.length ? 'ok' : 'warn',
+      },
+      {
+        key: 'daemonsets',
+        label: 'Daemon Sets',
+        count: visibleDaemonSets.length,
+        health: `${readyDaemonSets}/${visibleDaemonSets.length} ready`,
+        tone: readyDaemonSets === visibleDaemonSets.length ? 'ok' : 'warn',
+      },
+      {
+        key: 'statefulsets',
+        label: 'Stateful Sets',
+        count: visibleStatefulSets.length,
+        health: `${readyStatefulSets}/${visibleStatefulSets.length} ready`,
+        tone: readyStatefulSets === visibleStatefulSets.length ? 'ok' : 'warn',
+      },
+      {
+        key: 'replicasets',
+        label: 'Replica Sets',
+        count: visibleReplicaSets.length,
+        health: `${visibleReplicaSets.reduce((sum, rs) => sum + rs.readyReplicas, 0)} ready replicas`,
+        tone: 'ok',
+      },
+      {
+        key: 'replicationcontrollers',
+        label: 'Replication Controllers',
+        count: visibleReplicationControllers.length,
+        health: `${visibleReplicationControllers.reduce((sum, rc) => sum + rc.readyReplicas, 0)} ready replicas`,
+        tone: 'ok',
+      },
+      {
+        key: 'jobs',
+        label: 'Jobs',
+        count: visibleJobs.length,
+        health: `${activeJobs} active`,
+        tone: activeJobs > 0 ? 'warn' : 'ok',
+      },
+      {
+        key: 'cronjobs',
+        label: 'CronJobs',
+        count: visibleCronJobs.length,
+        health: `${suspendedCronJobs} suspended`,
+        tone: suspendedCronJobs > 0 ? 'warn' : 'ok',
+      },
+    ]
+
+    return (
+      <div className="overview-detail workload-overview">
+        <div className="overview-grid overview-status-grid">
+          <SummaryCard
+            label="Pods"
+            value={`${visibleRunningPods}/${visiblePods.length}`}
+            detail={`Failed ${visibleFailedPods}`}
+            tone={visibleFailedPods > 0 ? 'error' : 'ready'}
+          />
+          <SummaryCard
+            label="Deployments"
+            value={`${readyDeployments}/${visibleDeployments.length}`}
+            detail="Ready deployments"
+            tone={readyDeployments === visibleDeployments.length ? 'ready' : 'warn'}
+          />
+          <SummaryCard
+            label="Daemon Sets"
+            value={`${readyDaemonSets}/${visibleDaemonSets.length}`}
+            detail="Ready daemon sets"
+            tone={readyDaemonSets === visibleDaemonSets.length ? 'ready' : 'warn'}
+          />
+          <SummaryCard
+            label="Stateful Sets"
+            value={`${readyStatefulSets}/${visibleStatefulSets.length}`}
+            detail="Ready stateful sets"
+            tone={readyStatefulSets === visibleStatefulSets.length ? 'ready' : 'warn'}
+          />
+        </div>
+
+        <div className="system-log-panel">
+          <div className="system-log-header">
+            <div>
+              <div className="system-log-title">Workload Overview</div>
+              <div className="system-log-subtitle">按命名空间和搜索条件汇总当前工作负载</div>
+            </div>
+            <div className="system-log-count">{workloadRows.reduce((sum, row) => sum + row.count, 0)} 项</div>
+          </div>
+          <div className="table workload-overview-table">
+            <div className="table-row table-head workload-overview-row">
+              <div>类型</div>
+              <div>数量</div>
+              <div>状态</div>
+              <div>操作</div>
+            </div>
+            {workloadRows.map((row) => (
+              <div
+                className="table-row clickable workload-overview-row"
+                key={row.key}
+                onClick={() => setSelectedResourceType(row.key)}
+              >
+                <div>{row.label}</div>
+                <div>{row.count}</div>
+                <div className={`status ${row.tone}`}>{row.health}</div>
+                <div className="detail-value-truncate">打开 {row.label}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   const renderOverview = () => (
     <div className="overview-detail">
       <div className="overview-grid overview-status-grid">
@@ -3401,6 +3882,9 @@ const App = () => {
     switch (selectedResourceType) {
       case 'overview':
         return renderOverview()
+
+      case 'workloads':
+        return renderWorkloadOverview()
 
       case 'componentstatuses': {
         const sortedComponents = getVisibleData(componentStatuses)
@@ -3615,43 +4099,14 @@ const App = () => {
         )
       }
 
-      case 'topnodes': {
-        const topNodes = getTopNodes()
-        return (
-          <div className="table">
-            {renderTableHead([
-              { label: '名称', field: 'name' },
-              { label: 'CPU', field: 'cpuUsage' },
-              { label: 'Memory', field: 'memoryUsage' },
-              { label: '状态', field: 'status' },
-              { label: '调度', field: 'unschedulable' },
-              { label: '角色', field: 'roles' },
-              { label: '版本', field: 'version' },
-              { label: '存活', field: 'age' },
-            ], true)}
-            {topNodes.map((node) => (
-              <div className="table-row clickable" key={node.name} onClick={() => handleNodeClick(node.name, selectedId)}>
-                <div>{node.name}</div>
-                <div>{node.cpuUsage ?? '-'}</div>
-                <div>{node.memoryUsage ?? '-'}</div>
-                <div className={`status ${node.status === 'Ready' ? 'ok' : 'warn'}`}>{node.status}</div>
-                <div className={`status ${getNodeSchedulingStatusClass(node)}`}>{getNodeSchedulingStatus(node)}</div>
-                <div>{node.roles}</div>
-                <div>{node.version}</div>
-                <div>{node.age}</div>
-                {renderActions(nodeRowActions(node))}
-              </div>
-            ))}
-            {topNodes.length === 0 && <div className="table-empty">暂无 Node metrics 数据</div>}
-          </div>
-        )
-      }
-
       case 'toppods': {
         const topPods = getTopPods()
         return (
-          <div className="table">
-            {renderTableHead([
+          <VirtualizedResourceTable
+            rows={topPods}
+            rowHeight={32}
+            resetKey={`toppods:${selectedNamespace}:${searchText}:${sortField}:${sortDirection}`}
+            header={renderTableHead([
               { label: '名称', field: 'name' },
               { label: '命名空间', field: 'namespace' },
               { label: 'CPU', field: 'cpu' },
@@ -3660,9 +4115,11 @@ const App = () => {
               { label: '节点', field: 'nodeName' },
               { label: '重启', field: 'restarts' },
               { label: '存活', field: 'age' },
-            ], true)}
-            {topPods.map((pod) => (
-              <div className="table-row clickable" key={`${pod.namespace}-${pod.name}`} onClick={() => handlePodClick(pod, selectedId)}>
+            ], false, 'pod-table-row')}
+            emptyState={<div className="table-empty">暂无 Pod metrics 数据</div>}
+            getRowKey={(pod) => `${pod.namespace}-${pod.name}`}
+            renderRow={(pod) => (
+              <div className="table-row clickable pod-table-row" key={`${pod.namespace}-${pod.name}`} onClick={() => handlePodClick(pod, selectedId)}>
                 <div>{pod.name}</div>
                 <div>{pod.namespace}</div>
                 <div>{pod.cpu ?? '-'}</div>
@@ -3671,56 +4128,9 @@ const App = () => {
                 <div>{pod.nodeName}</div>
                 <div>{pod.restarts}</div>
                 <div>{pod.age}</div>
-                {renderActions([
-                  {
-                    key: 'logs',
-                    label: 'Logs',
-                    className: 'logs-btn',
-                    onClick: () => handleOpenPodLogs(pod),
-                    title: '查看日志',
-                  },
-                  {
-                    key: 'exec',
-                    label: 'Exec',
-                    className: 'scale-btn',
-                    onClick: () => setSelectedPodForExec(pod),
-                    title: '执行命令',
-                  },
-                  {
-                    key: 'attach',
-                    label: 'Attach',
-                    className: 'shell-btn',
-                    onClick: () => handleAttachPod(pod),
-                    title: 'Attach 到 Pod 主进程',
-                  },
-                  describeAction('Pod', pod.namespace, pod.name),
-                  metadataAction('Pod', pod.namespace, pod.name),
-                  {
-                    key: 'yaml',
-                    label: 'YAML',
-                    className: 'yaml-btn',
-                    onClick: () => openYamlEditor('edit', 'Pod', pod.namespace, pod.name),
-                    title: '编辑 YAML',
-                  },
-                  {
-                    key: 'evict',
-                    label: 'Evict',
-                    className: 'delete-btn',
-                    onClick: () => handleEvictPod(pod),
-                    title: 'Evict Pod',
-                  },
-                  {
-                    key: 'force-delete',
-                    label: 'Force',
-                    className: 'delete-btn',
-                    onClick: () => handleForceDeletePod(pod),
-                    title: '强制删除 Pod',
-                  },
-                ])}
               </div>
-            ))}
-            {topPods.length === 0 && <div className="table-empty">暂无 Pod metrics 数据</div>}
-          </div>
+            )}
+          />
         )
       }
 
@@ -3737,10 +4147,10 @@ const App = () => {
               { label: '状态', field: 'state' },
               { label: '重启', field: 'restartCount' },
               { label: '节点', field: 'nodeName' },
-            ], true)}
+            ], false, 'container-table-row')}
             {topContainers.map((container) => (
               <div
-                className="table-row clickable"
+                className="table-row clickable container-table-row"
                 key={`${container.namespace}-${container.podName}-${container.name}`}
                 onClick={() => handlePodClick(container.pod, selectedId)}
               >
@@ -3752,29 +4162,6 @@ const App = () => {
                 <div className={`status ${container.ready ? 'ok' : 'warn'}`}>{container.state}</div>
                 <div>{container.restartCount}</div>
                 <div>{container.nodeName}</div>
-                {renderActions([
-                  {
-                    key: 'logs',
-                    label: 'Logs',
-                    className: 'logs-btn',
-                    onClick: () => handleOpenPodLogs(container.pod),
-                    title: '查看日志',
-                  },
-                  {
-                    key: 'exec',
-                    label: 'Exec',
-                    className: 'scale-btn',
-                    onClick: () => setSelectedPodForExec(container.pod),
-                    title: '执行命令',
-                  },
-                  {
-                    key: 'yaml',
-                    label: 'YAML',
-                    className: 'yaml-btn',
-                    onClick: () => openYamlEditor('edit', 'Pod', container.namespace, container.podName),
-                    title: '编辑 YAML',
-                  },
-                ])}
               </div>
             ))}
             {topContainers.length === 0 && <div className="table-empty">暂无 Container metrics 数据</div>}
@@ -3845,41 +4232,108 @@ const App = () => {
 
       case 'nodes': {
         const sortedNodes = getVisibleData(nodes)
-        return (
-          <div className="table">
-            {renderTableHead([
-              { label: '名称', field: 'name' },
-              { label: '状态', field: 'status' },
-              { label: '调度', field: 'unschedulable' },
-              { label: '版本', field: 'version' },
-              { label: '角色', field: 'roles' },
-              { label: 'CPU', field: 'cpuUsage' },
-              { label: 'Memory', field: 'memoryUsage' },
-              { label: '存活', field: 'age' },
-            ], true)}
-            {sortedNodes.map((node) => (
-              <div className="table-row clickable" key={node.name} onClick={() => handleNodeClick(node.name, selectedId)}>
-                <div>{node.name}</div>
-                <div className={`status ${node.status === 'Ready' ? 'ok' : 'warn'}`}>{node.status}</div>
-                <div className={`status ${getNodeSchedulingStatusClass(node)}`}>{getNodeSchedulingStatus(node)}</div>
-                <div>{node.version}</div>
-                <div>{node.roles}</div>
-                <div>{node.cpuUsage ?? '-'}</div>
-                <div>{node.memoryUsage ?? '-'}</div>
-                <div>{node.age}</div>
-                {renderActions(nodeRowActions(node))}
-              </div>
-            ))}
-            {sortedNodes.length === 0 && <div className="table-empty">暂无节点数据</div>}
+        const visibleNodeNames = sortedNodes.map((node) => node.name)
+        const selectedVisibleNodeCount = visibleNodeNames.filter((name) => selectedNodeNameSet.has(name)).length
+        const allVisibleNodesSelected = visibleNodeNames.length > 0 && selectedVisibleNodeCount === visibleNodeNames.length
+        const someVisibleNodesSelected = selectedVisibleNodeCount > 0 && !allVisibleNodesSelected
+        const renderNodeHeadCell = (label: string, field: string) => (
+          <div
+            key={field}
+            className={!label ? 'table-head-icon-cell' : undefined}
+            onClick={label ? () => handleSort(field) : undefined}
+          >
+            {label}
+            {label && <SortIcon direction={sortField === field ? sortDirection : undefined} />}
           </div>
+        )
+        return (
+          <VirtualizedResourceTable
+            rows={sortedNodes}
+            rowHeight={32}
+            resetKey={`nodes:${searchText}:${sortField}:${sortDirection}`}
+            header={(
+              <div className="table-row table-head node-table-row">
+                <div className="table-select-cell" onClick={(event) => event.stopPropagation()}>
+                  <input
+                    type="checkbox"
+                    aria-label="选择全部可见 Node"
+                    checked={allVisibleNodesSelected}
+                    ref={(input) => {
+                      if (input) input.indeterminate = someVisibleNodesSelected
+                    }}
+                    onChange={() => toggleVisibleNodeSelection(visibleNodeNames)}
+                  />
+                </div>
+                {[
+                  { label: 'Name', field: 'name' },
+                  { label: '', field: 'nodeWarnings' },
+                  { label: 'CPU', field: 'cpuUsage' },
+                  { label: 'Memory', field: 'memoryUsage' },
+                  { label: 'Disk', field: 'diskUsage' },
+                  { label: 'Taints', field: 'taints' },
+                  { label: 'Roles', field: 'roles' },
+                  { label: 'Version', field: 'version' },
+                  { label: 'Age', field: 'age' },
+                  { label: 'Conditions', field: 'status' },
+                  { label: 'Scheduling', field: 'unschedulable' },
+                ].map(({ label, field }) => renderNodeHeadCell(label, field))}
+                <div>Actions</div>
+              </div>
+            )}
+            emptyState={<div className="table-empty">暂无节点数据</div>}
+            getRowKey={(node) => node.name}
+            renderRow={(node) => (
+              <div
+                className={`table-row clickable node-table-row ${selectedNodeNameSet.has(node.name) ? 'selected' : ''}`}
+                key={node.name}
+                onClick={() => handleNodeClick(node.name, selectedId)}
+              >
+                <div className="table-select-cell" onClick={(event) => event.stopPropagation()}>
+                  <input
+                    type="checkbox"
+                    aria-label={`选择 Node ${node.name}`}
+                    checked={selectedNodeNameSet.has(node.name)}
+                    onChange={() => toggleNodeSelection(node.name)}
+                  />
+                </div>
+                <div className="cell-truncate" title={node.name}>{node.name}</div>
+                <div className={`node-warning-cell ${getNodeWarningCount(node) > 0 ? 'has-warning' : ''}`} title={`${getNodeWarningCount(node)} warning conditions`}>
+                  {getNodeWarningCount(node) > 0 ? '!' : ''}
+                </div>
+                <div><MetricUsageBar value={node.cpuUsage} kind="cpu" /></div>
+                <div><MetricUsageBar value={node.memoryUsage} kind="memory" /></div>
+                <div><MetricUsageBar kind="disk" /></div>
+                <div>{node.taints?.length ?? 0}</div>
+                <div className="cell-truncate" title={node.roles}>{node.roles}</div>
+                <div>{node.version}</div>
+                <div>{node.age}</div>
+                <div className={`condition-text ${node.status === 'Ready' ? 'ready' : 'warn'}`}>
+                  {node.status}
+                </div>
+                <div className={`status ${getNodeSchedulingStatusClass(node)}`}>
+                  {node.unschedulable ? 'Disabled' : 'Enabled'}
+                </div>
+                {renderActions([{
+                  key: 'metadata',
+                  label: '设置',
+                  className: 'metadata-btn',
+                  onClick: () => handleMutateResourceMetadata('Node', '', node.name),
+                  title: `单独设置 Node ${node.name} 的 Label 或 Annotation`,
+                }])}
+              </div>
+            )}
+          />
         )
       }
 
       case 'pods': {
         const sortedPods = getVisibleNamespacedData(pods)
         return (
-          <div className="table">
-            {renderTableHead([
+          <VirtualizedResourceTable
+            rows={sortedPods}
+            rowHeight={32}
+            resetKey={`pods:${selectedNamespace}:${searchText}:${sortField}:${sortDirection}`}
+            header={renderTableHead([
               { label: '名称', field: 'name' },
               { label: '命名空间', field: 'namespace' },
               { label: '状态', field: 'status' },
@@ -3888,9 +4342,11 @@ const App = () => {
               { label: 'CPU', field: 'cpu' },
               { label: 'Memory', field: 'memory' },
               { label: '存活', field: 'age' },
-            ], true)}
-            {sortedPods.map((pod) => (
-              <div className="table-row clickable" key={`${pod.namespace}-${pod.name}`} onClick={() => handlePodClick(pod, selectedId)}>
+            ], false, 'pod-table-row')}
+            emptyState={<div className="table-empty">暂无 Pod 数据</div>}
+            getRowKey={(pod) => `${pod.namespace}-${pod.name}`}
+            renderRow={(pod) => (
+              <div className="table-row clickable pod-table-row" key={`${pod.namespace}-${pod.name}`} onClick={() => handlePodClick(pod, selectedId)}>
                 <div>{pod.name}</div>
                 <div>{pod.namespace}</div>
                 <div className={`status ${pod.status === 'Running' ? 'ok' : 'warn'}`}>{pod.status}</div>
@@ -3899,77 +4355,9 @@ const App = () => {
                 <div>{pod.cpu ?? '-'}</div>
                 <div>{pod.memory ?? '-'}</div>
                 <div>{pod.age}</div>
-                {renderActions([
-                  {
-                    key: 'shell',
-                    label: '进入',
-                    className: 'shell-btn',
-                    onClick: () => handleEnterPodShell(pod),
-                    title: '进入 Pod Shell',
-                  },
-                  {
-                    key: 'attach',
-                    label: 'Attach',
-                    className: 'shell-btn',
-                    onClick: () => handleAttachPod(pod),
-                    title: 'Attach 到 Pod 主进程',
-                  },
-                  {
-                    key: 'logs',
-                    label: 'Logs',
-                    className: 'logs-btn',
-                    onClick: () => handleOpenPodLogs(pod),
-                    title: '查看日志',
-                  },
-                  {
-                    key: 'exec',
-                    label: 'Exec',
-                    className: 'scale-btn',
-                    onClick: () => setSelectedPodForExec(pod),
-                    title: '执行命令',
-                  },
-                  {
-                    key: 'port',
-                    label: 'Port',
-                    className: 'scale-btn',
-                    onClick: () => setSelectedPortForwardTarget(portForwardTargetForPod(pod)),
-                    title: '端口转发',
-                  },
-                  describeAction('Pod', pod.namespace, pod.name),
-                  metadataAction('Pod', pod.namespace, pod.name),
-                  {
-                    key: 'yaml',
-                    label: 'YAML',
-                    className: 'yaml-btn',
-                    onClick: () => openYamlEditor('edit', 'Pod', pod.namespace, pod.name),
-                    title: '编辑 YAML',
-                  },
-                  {
-                    key: 'delete',
-                    label: 'Delete',
-                    className: 'delete-btn',
-                    onClick: () => handleDeleteResource('Pod', pod.namespace, pod.name),
-                    title: '删除 Pod',
-                  },
-                  {
-                    key: 'evict',
-                    label: 'Evict',
-                    className: 'delete-btn',
-                    onClick: () => handleEvictPod(pod),
-                    title: 'Evict Pod',
-                  },
-                  {
-                    key: 'force-delete',
-                    label: 'Force',
-                    className: 'delete-btn',
-                    onClick: () => handleForceDeletePod(pod),
-                    title: '强制删除 Pod',
-                  },
-                ])}
               </div>
-            ))}
-            {sortedPods.length === 0 && <div className="table-empty">暂无 Pod 数据</div>}
-          </div>
+            )}
+          />
         )
       }
 
@@ -8296,236 +8684,179 @@ const App = () => {
   }
 
   return (
-    <div className={`app ${hasClientShell ? 'client-shell-app' : ''}`} data-theme={appTheme}>
+    <div className={appClassName} data-theme={appTheme}>
       {hasClientShell && (
         <div className="client-shell" aria-hidden="true">
           <div className="client-shell-title">k7s</div>
         </div>
       )}
-      <aside className="sidebar">
-        <div className="sidebar-header">
-          <div>
-            <div className="sidebar-title">k7s</div>
-            <div className="sidebar-subtitle">本地集群管理</div>
-          </div>
-          <button className="add-btn" onClick={handleAddClick} disabled={isAdding}>
-            {isAdding ? '添加中...' : '添加'}
-          </button>
-        </div>
-        <div className="sidebar-list">
-          {contexts.length === 0 && <div className="sidebar-empty">暂无集群</div>}
-          {contextPrefs ? (
-            <>
-              <div className="group-controls">
-                {isAddingGroup ? (
-                  <>
-                    <input
-                      className="group-input"
-                      placeholder="分组名称"
-                      value={newGroupName}
-                      onChange={(event) => setNewGroupName(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter') handleConfirmAddGroup()
-                        if (event.key === 'Escape') handleCancelAddGroup()
-                      }}
-                      autoFocus
-                    />
-                    <button className="add-btn" onClick={handleConfirmAddGroup}>保存</button>
-                    <button className="add-btn" onClick={handleCancelAddGroup}>取消</button>
-                  </>
-                ) : (
-                  <button className="add-btn" onClick={handleAddGroup}>添加分组</button>
-                )}
-              </div>
-              {contextPrefs.groups.map((group) => (
-                <div key={group.id} className="sidebar-group">
-                  <div className="sidebar-group-header" onDragOver={allowDragOver} onDrop={dropOnGroup(group.id)}>
-                    {group.name}
-                  </div>
-                  <div className="sidebar-group-list" onDragOver={allowDragOver} onDrop={dropOnGroup(group.id)}>
-                    {group.items.map((contextId) => {
-                      const context = ctxMap.get(contextId)
-                      if (!context) return null
+      <aside className="cluster-rail" aria-label="Clusters">
+        <button className="cluster-rail-logo" type="button" onClick={() => setSelectedResourceType('overview')} title="k7s">
+          <span className="cluster-rail-emblem">K7</span>
+        </button>
+        <div className="cluster-rail-list">
+          {contexts.map((context) => {
+            const title = getDisplayName(context)
+            const isActive = context.id === selectedId
 
-                      const title = getDisplayName(context)
-                      const isActive = contextId === selectedId
-
-                      return (
-                        <button
-                          key={contextId}
-                          className={`sidebar-item ${isActive ? 'active' : ''}`}
-                          onClick={() => selectContext(contextId)}
-                          draggable
-                          onDragStart={startDrag(contextId, group.id)}
-                          onDragOver={allowDragOver}
-                          onDrop={dropOnItem(contextId, group.id)}
-                        >
-                          <div className="sidebar-item-title">
-                            {editingContextId === contextId ? (
-                              <input
-                                className="sidebar-item-input"
-                                value={editingName}
-                                onChange={(event) => setEditingName(event.target.value)}
-                                onBlur={submitRename}
-                                onKeyDown={handleRenameKey}
-                                autoFocus
-                              />
-                            ) : (
-                              title
-                            )}
-                          </div>
-                          <div className="sidebar-item-meta">
-                            {formatContextMeta(context)}
-                            <span
-                              className="edit-icon"
-                              onClick={(event) => {
-                                event.stopPropagation()
-                                beginRename(contextId, title)
-                              }}
-                              title="重命名"
-                            >
-                              ✎
-                            </span>
-                          </div>
-                        </button>
-                      )
-                    })}
-                  </div>
-                </div>
-              ))}
-              <div className="sidebar-group">
-                <div className="sidebar-group-header" onDragOver={allowDragOver} onDrop={dropOnGroup('__ungrouped__')}>
-                  未分组
-                </div>
-                <div className="sidebar-group-list" onDragOver={allowDragOver} onDrop={dropOnGroup('__ungrouped__')}>
-                  {contextPrefs.ungrouped.map((contextId) => {
-                    const context = ctxMap.get(contextId)
-                    if (!context) return null
-
-                    const title = getDisplayName(context)
-                    const isActive = contextId === selectedId
-
-                    return (
-                      <button
-                        key={contextId}
-                        className={`sidebar-item ${isActive ? 'active' : ''}`}
-                        onClick={() => selectContext(contextId)}
-                        draggable
-                        onDragStart={startDrag(contextId, '__ungrouped__')}
-                        onDragOver={allowDragOver}
-                        onDrop={dropOnItem(contextId, '__ungrouped__')}
-                      >
-                        <div className="sidebar-item-title">
-                          {editingContextId === contextId ? (
-                            <input
-                              className="sidebar-item-input"
-                              value={editingName}
-                              onChange={(event) => setEditingName(event.target.value)}
-                              onBlur={submitRename}
-                              onKeyDown={handleRenameKey}
-                              autoFocus
-                            />
-                          ) : (
-                            title
-                          )}
-                        </div>
-                        <div className="sidebar-item-meta">
-                          {formatContextMeta(context)}
-                          <span
-                            className="edit-icon"
-                            onClick={(event) => {
-                              event.stopPropagation()
-                              beginRename(contextId, title)
-                            }}
-                            title="重命名"
-                          >
-                            ✎
-                          </span>
-                        </div>
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
-            </>
-          ) : (
-            contexts.map((context) => (
+            return (
               <button
                 key={context.id}
-                className={`sidebar-item ${context.id === selectedId ? 'active' : ''}`}
+                className={`cluster-rail-item ${isActive ? 'active' : ''}`}
+                type="button"
                 onClick={() => selectContext(context.id)}
+                title={`${title} · ${context.cluster}`}
               >
-                <div className="sidebar-item-title">{context.name}</div>
-                <div className="sidebar-item-meta">
-                  {formatContextMeta(context)}
-                </div>
+                <span className="cluster-rail-mark">{getContextInitials(title)}</span>
+                <span className={`cluster-rail-status ${context.current ? 'current' : ''}`} />
               </button>
-            ))
+            )
+          })}
+        </div>
+        <button className="cluster-rail-add" type="button" onClick={handleAddClick} disabled={isAdding} title="添加集群">
+          +
+        </button>
+      </aside>
+
+      <aside className="navigator" aria-label="Navigator">
+        <div className="navigator-header">
+          <div className="navigator-title">Navigator</div>
+        </div>
+        <div className="navigator-controls">
+          <select
+            className="navigator-context-select"
+            value={selectedId}
+            onChange={(event) => selectContext(event.target.value)}
+            aria-label="选择集群"
+          >
+            {contexts.length === 0 && <option value="">No clusters</option>}
+            {contexts.map((context) => (
+              <option key={context.id} value={context.id}>
+                {getDisplayName(context)}
+              </option>
+            ))}
+          </select>
+          <button className="navigator-icon-btn" type="button" onClick={handleAddClick} disabled={isAdding} title="添加集群">
+            +
+          </button>
+        </div>
+        <div className="navigator-tree">
+          {activeContext && (
+            <div className="navigator-cluster-root">
+              <button
+                className={`navigator-tree-row root ${selectedResourceType === 'overview' ? 'active' : ''}`}
+                type="button"
+                onClick={() => setSelectedResourceType('overview')}
+              >
+                <span className="navigator-caret">‹</span>
+                <span className="navigator-root-badge">{getContextInitials(selectedContextDisplayName)}</span>
+                <span className="navigator-row-label">{selectedContextDisplayName}</span>
+                <span className={`navigator-health-dot ${status}`} />
+              </button>
+              <div className="navigator-tree-children">
+                {RESOURCE_TYPE_GROUPS.map((group) => {
+                  const groupActive = group.items.some((item) => item.key === selectedResourceType)
+                  const singleItem = group.items.length === 1 ? group.items[0] : null
+
+                  if (singleItem) {
+                    return (
+                      <button
+                        key={group.title}
+                        className={`navigator-tree-row ${groupActive ? 'active' : ''}`}
+                        type="button"
+                        onClick={() => setSelectedResourceType(singleItem.key)}
+                        aria-pressed={groupActive}
+                      >
+                        <span className="navigator-caret">›</span>
+                        <span className="navigator-row-icon">{RESOURCE_GROUP_ICONS[group.title] ?? '•'}</span>
+                        <span className="navigator-row-label">{singleItem.label}</span>
+                      </button>
+                    )
+                  }
+
+                  return (
+                    <div className={`navigator-tree-group ${groupActive ? 'active' : ''}`} key={group.title}>
+                      <div className="navigator-tree-row group">
+                        <span className="navigator-caret">⌄</span>
+                        <span className="navigator-row-icon">{RESOURCE_GROUP_ICONS[group.title] ?? '•'}</span>
+                        <span className="navigator-row-label">{group.title}</span>
+                      </div>
+                      <div className="navigator-tree-children nested">
+                        {group.items.map((type) => (
+                          <button
+                            key={type.key}
+                            className={`navigator-tree-row child ${selectedResourceType === type.key ? 'active' : ''}`}
+                            type="button"
+                            onClick={() => setSelectedResourceType(type.key)}
+                            aria-pressed={selectedResourceType === type.key}
+                          >
+                            <span className="navigator-row-label">{type.label}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
           )}
+          {!activeContext && <div className="navigator-empty">暂无集群</div>}
         </div>
       </aside>
 
-      <main className="main">
-        <div className="main-header">
-          <div>
-            <div className="main-title">{selectedClusterName}</div>
-            {activeContext && (
-              <div className="main-subtitle">
-                {selectedContextDisplayName} · {activeContext.user}
-                {activeContext.namespace && (
-                  <span className="context-info-badge">ns:{activeContext.namespace}</span>
-                )}
-                {activeContext.current && (
-                  <span className="context-info-badge current">当前</span>
-                )}
-                <span className={`mode-badge ${isWebMode ? 'web' : 'desktop'}`}>
-                  {isWebMode ? 'Web / Local Only' : 'Desktop'}
-                </span>
-              </div>
-            )}
-          </div>
-          <div className="main-header-actions">
-            <div className={`status-pill ${getStatusPillClass()}`}>
-              {status === 'loading' && '加载中'}
-              {status === 'ready' && '已连接'}
-              {status === 'error' && '连接失败'}
-              {status === 'idle' && '等待中'}
-            </div>
-            <div className={`watch-status ${watchConnected ? 'connected' : 'disconnected'}`}>
-              {watchConnected ? 'Push Watch On' : 'Push Watch Off'}
-            </div>
+      <main className="workspace">
+        <div className="workspace-tabs">
+          <button
+            className={`workspace-tab ${selectedResourceType === 'overview' ? 'active' : ''}`}
+            type="button"
+            onClick={() => setSelectedResourceType('overview')}
+          >
+            <span className="workspace-tab-icon">▤</span>
+            <span>Release Notes</span>
+            <span className="workspace-tab-close">×</span>
+          </button>
+          <button
+            className={`workspace-tab ${selectedResourceType === 'workloads' ? 'active' : ''}`}
+            type="button"
+            onClick={() => setSelectedResourceType('workloads')}
+          >
+            <span className="workspace-tab-icon">{getContextInitials(selectedContextDisplayName)}</span>
+            <span>Workloads Overview - {selectedContextDisplayName}</span>
+            <span className="workspace-tab-close">×</span>
+          </button>
+          {selectedResourceType !== 'overview' && selectedResourceType !== 'workloads' && (
+            <button className="workspace-tab active" type="button">
+              <span className="workspace-tab-icon">{getContextInitials(selectedContextDisplayName)}</span>
+              <span>{currentResourceLabel} - {selectedContextDisplayName}</span>
+              <span className="workspace-tab-close">×</span>
+            </button>
+          )}
+          <div className="workspace-top-actions">
+            <span className={`status-pill ${getStatusPillClass()}`}>
+              {status === 'loading' && 'Loading'}
+              {status === 'ready' && 'Ready'}
+              {status === 'error' && 'Error'}
+              {status === 'idle' && 'Idle'}
+            </span>
+            <span className={`watch-status ${watchConnected ? 'connected' : 'disconnected'}`}>
+              {watchConnected ? 'Watch' : 'Watch off'}
+            </span>
             {activeContext && !activeContext.current && (
-              <button
-                className="settings-btn context-action-btn"
-                onClick={handleUseKubeContext}
-                title="写回 kubeconfig current-context"
-              >
+              <button className="settings-btn context-action-btn" type="button" onClick={handleUseKubeContext} title="写回 kubeconfig current-context">
                 设为当前
               </button>
             )}
             {activeContext && (
-              <button
-                className="settings-btn context-action-btn"
-                onClick={handleSetKubeContextNamespace}
-                title="写回 kubeconfig 默认命名空间"
-              >
+              <button className="settings-btn context-action-btn" type="button" onClick={handleSetKubeContextNamespace} title="写回 kubeconfig 默认命名空间">
                 默认命名空间
               </button>
             )}
             {terminalAvailable && (
-              <button
-                className={`terminal-btn ${showTerminal ? 'active' : ''}`}
-                onClick={toggleTerminal}
-                title="终端"
-              >
+              <button className={`terminal-btn ${showTerminal ? 'active' : ''}`} type="button" onClick={toggleTerminal} title="终端">
                 Terminal
               </button>
             )}
-            <button
-              className="settings-btn"
-              onClick={() => setIsSettingsOpen(true)}
-              title="设置"
-            >
+            <button className="settings-btn" type="button" onClick={() => setIsSettingsOpen(true)} title="设置">
               设置
             </button>
           </div>
@@ -8537,75 +8868,70 @@ const App = () => {
         {contexts.length === 0 ? (
           <EmptyState onAdd={handleAddClick} />
         ) : (
-          <div className="content-wrapper">
-            <aside className="resource-sidebar">
-              <div className="resource-sidebar-title">资源类型</div>
-              <div className="resource-sidebar-list">
-                {RESOURCE_TYPE_GROUPS.map((group) => (
-                  <div className="resource-sidebar-group" key={group.title}>
-                    <div className="resource-sidebar-group-title">{group.title}</div>
-                    <div className="resource-sidebar-group-list">
-                      {group.items.map((type) => (
-                        <button
-                          key={type.key}
-                          className={`resource-sidebar-item ${selectedResourceType === type.key ? 'active' : ''}`}
-                          onClick={() => setSelectedResourceType(type.key)}
-                          aria-pressed={selectedResourceType === type.key}
-                        >
-                          <span className="resource-sidebar-item-label">{type.label}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </aside>
-
-            <div className="content-main">
-              <section className="resource-section compact">
-                <div className="resource-header">
-                  <div className="resource-title">{currentResourceLabel}</div>
-                  <div className="resource-header-meta">
-                    <div className="resource-count">
-                      {selectedResourceType === 'overview' ? `${currentResourceCount} 条系统事件` : `${currentResourceCount} 项`}
-                    </div>
-                    {clusterHealth?.lastUpdated && (
-                      <div className="resource-meta-text">
-                        健康检查: {new Date(clusterHealth.lastUpdated).toLocaleTimeString()}
-                      </div>
-                    )}
-                  </div>
-                </div>
-
+          <section className="resource-section compact lens-resource-section">
                 {selectedResourceType !== 'overview' && (
-                  <div className="resource-toolbar">
+                  <div className="resource-toolbar lens-resource-toolbar">
                     <div className="resource-filters">
-                      <div className="namespace-filter">
-                        <select
-                          className="namespace-select"
-                          value={selectedNamespace}
-                          onChange={(event) => setSelectedNamespaces(event.target.value ? [event.target.value] : [])}
-                        >
-                          <option value="">全部命名空间</option>
-                          {namespaces.map((namespace) => (
-                            <option key={namespace.name} value={namespace.name}>
-                              {namespace.name}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="search-input-wrap">
+                      {showNamespaceFilter && (
+                        <div className="namespace-filter">
+                          <select
+                            className="namespace-select"
+                            value={selectedNamespace}
+                            onChange={(event) => setSelectedNamespaces(event.target.value ? [event.target.value] : [])}
+                          >
+                            <option value="">all namespaces</option>
+                            {namespaces.map((namespace) => (
+                              <option key={namespace.name} value={namespace.name}>
+                                {namespace.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                      <div className="search-input-wrap lens-search-input-wrap">
+                        <span className="search-mode-token">Aa</span>
+                        <span className="search-mode-token">.*</span>
                         <input
                           type="text"
                           className="search-input"
-                          placeholder="搜索资源名称或 namespace..."
+                          placeholder={searchPlaceholder}
                           value={searchText}
                           onChange={(event) => setSearchText(event.target.value)}
                         />
                       </div>
+                      <span className="toolbar-download-icon">↓</span>
+                      <span className="resource-count">{currentResourceCountLabel}</span>
+                      {clusterHealth?.lastUpdated && (
+                        <span className="resource-meta-text">
+                          {new Date(clusterHealth.lastUpdated).toLocaleTimeString()}
+                        </span>
+                      )}
                     </div>
 
                     <div className="create-controls">
+                      {selectedResourceType === 'nodes' && (
+                        <div className="node-bulk-controls">
+                          <span className="bulk-selection-count">已选 {selectedNodeNames.length}</span>
+                          <button
+                            className="create-btn secondary"
+                            onClick={openNodeLabelModal}
+                            disabled={selectedNodeNames.length === 0 || nodeLabelLoading}
+                            title="批量增加或修改 Node labels"
+                          >
+                            Label Nodes
+                          </button>
+                          {selectedNodeNames.length > 0 && (
+                            <button
+                              className="create-btn secondary compact"
+                              onClick={() => setSelectedNodeNames([])}
+                              disabled={nodeLabelLoading}
+                              title="清空 Node 选择"
+                            >
+                              清空
+                            </button>
+                          )}
+                        </div>
+                      )}
                       <button
                         className="create-btn"
                         onClick={() => setIsCreateModalOpen(true)}
@@ -8661,11 +8987,25 @@ const App = () => {
                 <div className="table-container">
                   {renderResourceTable()}
                 </div>
-              </section>
-            </div>
-          </div>
+          </section>
         )}
       </main>
+
+      <div className="app-status-bar" aria-live="polite">
+        <span>You're using k7s Desktop</span>
+        <span className="status-bar-separator" />
+        <span className="status-bar-cluster">{statusBarClusterLabel}</span>
+      </div>
+
+      <NodeLabelBatchModal
+        open={isNodeLabelModalOpen}
+        selectedNames={selectedNodeNames}
+        value={nodeLabelDraft}
+        loading={nodeLabelLoading}
+        onChange={setNodeLabelDraft}
+        onClose={closeNodeLabelModal}
+        onSubmit={handleApplyNodeLabels}
+      />
 
       {isSettingsOpen && (
         <SettingsModal
